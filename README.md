@@ -4,6 +4,12 @@ Multi-modal AI-powered game development platform built with Next.js and Phaser 3
 
 OminiStudio leverages different modality LLMs to collaboratively develop H5 games. The master brain LLM generates game logic code and asset requirements, while expert LLMs produce image assets that are injected into the game at runtime.
 
+## Demo Video
+
+[![OminiStudio Demo](https://img.youtube.com/vi/YPGmPkAcGko/0.jpg)](https://youtu.be/YPGmPkAcGko)
+
+**Watch on YouTube:** [https://youtu.be/YPGmPkAcGko](https://youtu.be/YPGmPkAcGko)
+
 ## Workflow
 
 ![OminiStudio Workflow](assets/workflow.png)
