@@ -1,0 +1,65 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  description String   @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  versions Version[]
+  assets   Asset[]
+  messages ChatMessage[]
+}
+
+model Version {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  prompt    String
+  summary   String   @default("")
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  messages ChatMessage[]
+
+  @@index([projectId])
+}
+
+model Asset {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  type      String   @default("img")
+  uri       String
+  url       String   @default("")
+  filePath  String   @default("")
+  prompt    String   @default("")
+  createdAt DateTime @default(now())
+
+  @@index([projectId])
+  @@index([projectId, uri])
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  versionId String?
+  version   Version? @relation(fields: [versionId], references: [id], onDelete: SetNull)
+  role      String
+  content   String
+  files     String   @default("[]")
+  createdAt DateTime @default(now())
+
+  @@index([projectId])
+  @@index([versionId])
+}
