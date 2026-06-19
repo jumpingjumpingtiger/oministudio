@@ -10,12 +10,28 @@ jobs:
   check-push-format:
     runs-on: ubuntu-latest
     steps:
+      # 1. CRITICAL FIX: Fetch the repository files into the runner workspace
+      - name: Checkout Code Base
+        uses: actions/checkout@v4
+
+      # 2. Analyze the metadata and enforce explicit push rules
       - name: "Analyze Git Push Metadata and Enforce Rules"
         run: |
-          # 1. Dynamically retrieve the target remote branch name via GitHub Environment Variables
+          # Retrieve the accurate target remote branch name using GitHub context variable
           REMOTE_BRANCH="${{ github.ref_name }}"
           
           echo "======================================================================"
+          echo "🔍 [OminiStudio Server Engine] Analyzing push metadata for branch: $REMOTE_BRANCH"
+          echo "======================================================================"
+          
+          # 🛡️ BYPASS MECHANISM: If the target is the default branch (main/master), allow initialization and pass.
+          if [ "$REMOTE_BRANCH" = "main" ] || [ "$REMOTE_BRANCH" = "master" ]; then
+             echo "🚀 Default branch environment detected. Authentication approved."
+             exit 0
+          fi
+          
+          # 🚧 ENFORCEMENT ZONE: Rigidly block any implicit pushes to development/feature branches
+          echo ""
           echo "🚨 [GitHub Server Action Hook] Security Review Mechanism Triggered!"
           echo "======================================================================"
           echo "Analysis Results:"
@@ -27,5 +43,5 @@ jobs:
           echo ""
           echo "======================================================================"
           
-          # 2. Force the step to fail, blocking subsequent automated pipelines (CI/CD, Merges, etc.)
+          # Force the step to fail, blocking subsequent automated pipelines or PR merges
           exit 1
