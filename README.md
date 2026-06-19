@@ -115,7 +115,7 @@ Game code and assets live under `.data/`, which Next.js does not serve as static
 **URL patterns:**
 
 - Code: `/api/data/project/code/{projectId}/{versionId}/{filePath}`
-- Assets: `/api/data/project/assets/{projectId}/{type}/{assetId}.png`
+- Assets: `/api/data/project/assets/{projectId}/{type}/{assetId}.{png|jpeg|jpg}`
 
 The play route injects a `<base>` tag so relative script/module paths resolve correctly, and rewrites `asset://` URIs to proxied asset URLs before rendering.
 
@@ -136,8 +136,9 @@ In production, set `ENABLE_LOCAL_DATA_PROXY=true` only if you still use local `.
 | Real-time SSE progress (status, thinking, files, assets, errors) | ✅ |
 | **Asset reuse** — Brain LLM sets `regenerate: true/false`; unchanged assets skip image generation | ✅ |
 | Brain LLM prompt includes **image dimension guidance** for Phaser sprite sizing | ✅ |
-| **Multi-provider LLM** — Brain: OpenAI / Claude / Google / Doubao; Image: OpenAI / Google / Doubao | ✅ |
-| Mock/demo mode when API keys are not configured | ✅ |
+| **Multi-provider LLM** — Brain and Image LLMs use **separate API keys**; each can be a different vendor (OpenAI / Claude / Google / Doubao) | ✅ |
+| **Per-asset image format** — Brain LLM chooses `png` / `jpeg` / `jpg` per asset; only PNG is normalized to real PNG | ✅ |
+| Mock/demo mode when Brain LLM API key is not configured | ✅ |
 | `asset://type/name` URI scheme + runtime resolver injected into preview HTML | ✅ |
 
 ### Projects & Versions
@@ -169,8 +170,8 @@ In production, set `ENABLE_LOCAL_DATA_PROXY=true` only if you still use local `.
 ### Model Debug
 
 - **Floating draggable panel** — "Model Debug" button (default near top-right); drag to reposition, click to open.
-- **Brain / Image tabs** — Send a test prompt to either LLM.
-- **Config display** — Shows configured provider, model, and whether API keys are set.
+- **Brain / Image / PNG LLM tabs** — Send a test prompt to Brain or Image LLM; upload and convert fake PNGs on the PNG tab.
+- **Config display** — Shows configured provider, model, and the env var name for the active API key.
 
 
 ### Not Yet Implemented (from original spec)
@@ -192,9 +193,8 @@ In production, set `ENABLE_LOCAL_DATA_PROXY=true` only if you still use local `.
 # Install dependencies
 npm install
 
-# Set up environment variables
+# Copy and edit environment variables (see Configuration below)
 cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY (optional)
 
 # Initialize database
 npm run db:push
@@ -205,42 +205,102 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### Environment Variables
+### Configuration
+
+Copy `.env.example` to `.env` and fill in the values you need. Brain LLM and Image LLM are configured **independently** — you can use different providers and API keys for code generation vs image generation (e.g. Claude for Brain, Doubao for Image).
+
+#### Quick setup
+
+1. Choose providers: `BRAIN_LLM_PROVIDER` and `IMAGE_LLM_PROVIDER`
+2. Set the matching **role-specific** API key (e.g. `BRAIN_ANTHROPIC_API_KEY` when Brain uses Claude)
+3. Optionally override model names with `BRAIN_LLM_MODEL` / `IMAGE_LLM_MODEL`
+4. Leave keys empty to run in **mock mode** (demo platformer with placeholder assets)
+
+Example — Claude for code, Doubao for images:
+
+```env
+BRAIN_LLM_PROVIDER=claude
+BRAIN_LLM_MODEL=claude-sonnet-4-20250514
+BRAIN_ANTHROPIC_API_KEY=sk-ant-...
+
+IMAGE_LLM_PROVIDER=doubao
+IMAGE_LLM_MODEL=doubao-seedream-3-0-t2i
+IMAGE_DOUBAO_API_KEY=...
+DOUBAO_IMAGE_SIZE=2048x2048
+```
+
+#### Environment variables
+
+Variables below mirror `.env.example`. Role-specific keys are preferred; legacy shared keys are used as fallbacks when the role-specific key is unset.
+
+##### Database
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DATABASE_URL` | SQLite database path | `file:../.data/prisma/dev.db` |
-| `BRAIN_LLM_PROVIDER` | Brain LLM provider: `openai`, `claude`, `google`, `doubao` | `openai` |
-| `BRAIN_LLM_MODEL` | Brain LLM model name | Provider default |
-| `IMAGE_LLM_PROVIDER` | Image LLM provider: `openai`, `google`, `doubao` | `openai` |
-| `IMAGE_LLM_MODEL` | Image generation model name | Provider default |
-| `BRAIN_OPENAI_API_KEY` | OpenAI key for Brain LLM | — |
-| `BRAIN_ANTHROPIC_API_KEY` | Anthropic key for Brain LLM | — |
-| `BRAIN_GOOGLE_API_KEY` | Google key for Brain LLM | — |
-| `BRAIN_DOUBAO_API_KEY` | Doubao key for Brain LLM | — |
-| `BRAIN_DOUBAO_BASE_URL` | Doubao base URL for Brain LLM | Volcengine default |
-| `IMAGE_OPENAI_API_KEY` | OpenAI key for Image LLM | — |
-| `IMAGE_GOOGLE_API_KEY` | Google key for Image LLM | — |
-| `IMAGE_DOUBAO_API_KEY` | Doubao key for Image LLM | — |
-| `IMAGE_DOUBAO_BASE_URL` | Doubao base URL for Image LLM | Volcengine default |
-| `OPENAI_API_KEY` | Legacy shared OpenAI key (fallback) | — |
-| `ANTHROPIC_API_KEY` | Legacy shared Anthropic key (fallback) | — |
-| `GOOGLE_API_KEY` | Legacy shared Google key (fallback) | — |
-| `DOUBAO_API_KEY` | Legacy shared Doubao key (fallback) | — |
-| `DOUBAO_BASE_URL` | Legacy shared Doubao base URL (fallback) | Volcengine default |
-| `DOUBAO_IMAGE_SIZE` | Doubao image size (min 2560x1440 for Seedream 4.x+) | `2048x2048` |
-| `ENABLE_LOCAL_DATA_PROXY` | Serve `.data/` files via `/api/data/` in non-dev environments | `false` |
+| `DATABASE_URL` | SQLite path for Prisma CLI (`npm run db:push`). At runtime the app resolves to `.data/prisma/dev.db` under the project root. | `file:../.data/prisma/dev.db` |
 
-#### Provider Model Examples
+##### Brain LLM (code + asset manifest)
 
-| Provider | Brain Model Example | Image Model Example |
-|----------|--------------------|--------------------|
-| OpenAI | `gpt-4o`, `gpt-4o-mini` | `dall-e-3` |
-| Claude | `claude-sonnet-4-20250514` | — |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `BRAIN_LLM_PROVIDER` | Provider: `openai`, `claude`, `google`, `doubao` | `openai` |
+| `BRAIN_LLM_MODEL` | Model name | See [default models](#default-models-by-provider) |
+| `BRAIN_OPENAI_API_KEY` | OpenAI key when Brain provider is `openai` | — |
+| `BRAIN_ANTHROPIC_API_KEY` | Anthropic key when Brain provider is `claude` | — |
+| `BRAIN_GOOGLE_API_KEY` | Google key when Brain provider is `google` | — |
+| `BRAIN_DOUBAO_API_KEY` | Doubao key when Brain provider is `doubao` | — |
+| `BRAIN_DOUBAO_BASE_URL` | Doubao API base URL for Brain LLM | `https://ark.cn-beijing.volces.com/api/v3` |
+
+##### Image LLM (asset generation)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `IMAGE_LLM_PROVIDER` | Provider: `openai`, `google`, `doubao` | `openai` |
+| `IMAGE_LLM_MODEL` | Image model name | See [default models](#default-models-by-provider) |
+| `IMAGE_OPENAI_API_KEY` | OpenAI key when Image provider is `openai` | — |
+| `IMAGE_GOOGLE_API_KEY` | Google key when Image provider is `google` | — |
+| `IMAGE_DOUBAO_API_KEY` | Doubao key when Image provider is `doubao` | — |
+| `IMAGE_DOUBAO_BASE_URL` | Doubao API base URL for Image LLM | `https://ark.cn-beijing.volces.com/api/v3` |
+| `DOUBAO_IMAGE_SIZE` | Output size for Doubao image generation (e.g. `2048x2048`) | `2048x2048` |
+
+##### Legacy fallbacks (optional)
+
+If a role-specific key is not set, the matching legacy variable is used instead.
+
+| Variable | Used as fallback for |
+|----------|---------------------|
+| `OPENAI_API_KEY` | `BRAIN_OPENAI_API_KEY`, `IMAGE_OPENAI_API_KEY` |
+| `ANTHROPIC_API_KEY` | `BRAIN_ANTHROPIC_API_KEY` |
+| `GOOGLE_API_KEY` | `BRAIN_GOOGLE_API_KEY`, `IMAGE_GOOGLE_API_KEY` |
+| `DOUBAO_API_KEY` | `BRAIN_DOUBAO_API_KEY`, `IMAGE_DOUBAO_API_KEY` |
+| `DOUBAO_BASE_URL` | `BRAIN_DOUBAO_BASE_URL`, `IMAGE_DOUBAO_BASE_URL` |
+| `OPENAI_MODEL` | `BRAIN_LLM_MODEL` (when unset) |
+| `IMAGE_MODEL` | `IMAGE_LLM_MODEL` (when unset) |
+
+##### Runtime / storage
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ENABLE_LOCAL_DATA_PROXY` | Serve `.data/` files via `/api/data/` outside development | `false` (proxy always on in `NODE_ENV=development`) |
+
+#### Default models by provider
+
+| Provider | Brain default model | Image default model |
+|----------|---------------------|---------------------|
+| OpenAI | `gpt-4o-mini` | `dall-e-3` |
+| Claude | `claude-sonnet-4-20250514` | — (no image provider) |
 | Google | `gemini-2.0-flash` | `imagen-3.0-generate-002` |
 | Doubao | `doubao-pro-32k` | `doubao-seedream-3-0-t2i` |
 
-Without configured API keys, the platform uses mock data to generate a demo platformer game with placeholder assets.
+#### Mock mode vs live generation
+
+| Condition | Behavior |
+|-----------|----------|
+| Brain LLM key missing | Mock code + asset manifest (demo platformer) |
+| Brain key set, Image key missing | Real code; placeholder colored PNG/JPEG assets |
+| Both keys set | Full pipeline — Brain LLM + Image LLM |
+
+Use the **Model Debug** panel (top-right) to verify which provider, model, and API key env var are active.
 
 
 ## Frontend API Reference
