@@ -1,9 +1,21 @@
 import OpenAI from "openai";
-import { getDoubaoBaseUrl, getLlmConfig } from "@/lib/engine/llm-config";
+import {
+  getImageDoubaoBaseUrl,
+  getLlmConfig,
+  requireImageApiKey,
+} from "@/lib/engine/llm-config";
+import type { ImageAssetFormat } from "@/lib/asset-format";
+import { parseImageAssetFormat } from "@/lib/asset-format";
+import { processGeneratedImage } from "@/lib/engine/image-post-process";
+import type { PngNormalizeResult } from "@/lib/engine/png-normalize";
+import { normalizePngBuffer } from "@/lib/engine/png-normalize";
 
-export async function generateImageBuffer(
-  prompt: string
-): Promise<Buffer> {
+export interface GeneratedImageResult extends PngNormalizeResult {
+  rawSize: number;
+  format: ImageAssetFormat;
+}
+
+async function fetchRawImageBuffer(prompt: string): Promise<Buffer> {
   const { image } = getLlmConfig();
 
   switch (image.provider) {
@@ -18,13 +30,43 @@ export async function generateImageBuffer(
   }
 }
 
+/** Generate image via Image LLM; PNG outputs are normalized, JPEG/JPG are encoded as JPEG. */
+export async function generateImageBuffer(
+  prompt: string,
+  format: ImageAssetFormat | string = "png"
+): Promise<Buffer> {
+  const result = await generateImageBufferWithMeta(prompt, format);
+  return result.buffer;
+}
+
+export async function generateImageBufferWithMeta(
+  prompt: string,
+  format: ImageAssetFormat | string = "png"
+): Promise<GeneratedImageResult> {
+  const targetFormat = parseImageAssetFormat(format);
+  const raw = await fetchRawImageBuffer(prompt);
+
+  if (targetFormat === "png") {
+    const normalized = await normalizePngBuffer(raw, { claimsPng: true });
+    return { ...normalized, rawSize: raw.length, format: targetFormat };
+  }
+
+  const buffer = await processGeneratedImage(raw, targetFormat);
+  return {
+    buffer,
+    before: { isValidPng: false, detectedFormat: targetFormat, isFakePng: false },
+    after: { isValidPng: false, detectedFormat: targetFormat, isFakePng: false },
+    normalized: true,
+    rawSize: raw.length,
+    format: targetFormat,
+  };
+}
+
 async function generateOpenAiImage(
   prompt: string,
   model: string
 ): Promise<Buffer> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
-
+  const apiKey = requireImageApiKey("openai");
   const client = new OpenAI({ apiKey });
   const response = await client.images.generate({
     model,
@@ -43,9 +85,7 @@ async function generateGoogleImage(
   prompt: string,
   model: string
 ): Promise<Buffer> {
-  const apiKey = process.env.GOOGLE_API_KEY;
-  if (!apiKey) throw new Error("GOOGLE_API_KEY is not configured");
-
+  const apiKey = requireImageApiKey("google");
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${apiKey}`;
   const response = await fetch(url, {
     method: "POST",
@@ -74,14 +114,11 @@ async function generateDoubaoImage(
   prompt: string,
   model: string
 ): Promise<Buffer> {
-  const apiKey = process.env.DOUBAO_API_KEY;
-  if (!apiKey) throw new Error("DOUBAO_API_KEY is not configured");
+  const apiKey = requireImageApiKey("doubao");
 
-  // Seedream 4.x/5.x requires >= 3,686,400 pixels (e.g. 2560x1440).
-  // 2048x2048 works across Seedream 3.x–5.x models.
   const size = process.env.DOUBAO_IMAGE_SIZE || "2048x2048";
 
-  const response = await fetch(`${getDoubaoBaseUrl()}/images/generations`, {
+  const response = await fetch(`${getImageDoubaoBaseUrl()}/images/generations`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,

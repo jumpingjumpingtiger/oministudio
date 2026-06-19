@@ -106,6 +106,7 @@ function toUriRow(result: Awaited<ReturnType<typeof dispatchAssets>>[number]) {
     assetId: result.assetId,
     prompt: result.prompt,
     regenerate: result.regenerate,
+    format: result.format,
   };
 }
 
@@ -200,6 +201,7 @@ export async function generateCodePhase(
       name: a.name,
       uri: a.uri,
       regenerate: a.regenerate !== false,
+      format: a.format,
     })),
   });
 
@@ -287,6 +289,7 @@ export async function generateAssetsPhase(
       name: a.name,
       uri: a.uri,
       regenerate: a.regenerate !== false,
+      format: a.format,
     })),
   });
 

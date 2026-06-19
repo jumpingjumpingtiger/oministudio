@@ -1,5 +1,11 @@
 import { deflateSync } from "zlib";
+import sharp from "sharp";
 import { prisma } from "@/lib/db";
+import {
+  extensionFromUrl,
+  imageFormatToExtension,
+  parseImageAssetFormat,
+} from "@/lib/asset-format";
 import { isImageLlmConfigured } from "@/lib/engine/llm-config";
 import { generateImageBuffer } from "@/lib/engine/llm-providers/image-provider";
 import { writeAssetFile, type AssetType } from "@/lib/storage";
@@ -13,6 +19,7 @@ export interface DispatchResult {
   type: string;
   url: string;
   prompt: string;
+  format: string;
   regenerate: boolean;
   reused: boolean;
   success: boolean;
@@ -37,6 +44,10 @@ async function reuseExistingAsset(
     return null;
   }
 
+  const format =
+    asset.format ||
+    parseImageAssetFormat(extensionFromUrl(existing.url || "") || "png");
+
   return {
     order: asset.order,
     assetName: asset.name,
@@ -45,6 +56,7 @@ async function reuseExistingAsset(
     type: asset.type,
     url: existing.url,
     prompt: asset.prompt,
+    format,
     regenerate: false,
     reused: true,
     success: true,
@@ -56,6 +68,8 @@ async function generateImageAsset(
   asset: GeneratedAsset
 ): Promise<DispatchResult> {
   const uri = asset.uri || `asset://${asset.type}/${asset.name}`;
+  const format = parseImageAssetFormat(asset.format);
+  const ext = imageFormatToExtension(format);
 
   const record = await prisma.asset.create({
     data: {
@@ -72,12 +86,12 @@ async function generateImageAsset(
   let error: string | undefined;
 
   if (!isImageLlmConfigured()) {
-    buffer = createPlaceholderPng(asset.name);
+    buffer = await createPlaceholder(asset.name, format);
   } else {
     try {
-      buffer = await generateImageBuffer(asset.prompt);
+      buffer = await generateImageBuffer(asset.prompt, format);
     } catch (err) {
-      buffer = createPlaceholderPng(asset.name);
+      buffer = await createPlaceholder(asset.name, format);
       success = false;
       error = err instanceof Error ? err.message : "Image generation failed";
     }
@@ -87,7 +101,8 @@ async function generateImageAsset(
     projectId,
     asset.type as AssetType,
     record.id,
-    buffer
+    buffer,
+    ext
   );
 
   await prisma.asset.update({
@@ -103,6 +118,7 @@ async function generateImageAsset(
     type: asset.type,
     url,
     prompt: asset.prompt,
+    format,
     regenerate: true,
     reused: false,
     success,
@@ -175,6 +191,15 @@ export async function dispatchAssets(
   }
 
   return results;
+}
+
+async function createPlaceholder(
+  name: string,
+  format: ReturnType<typeof parseImageAssetFormat>
+): Promise<Buffer> {
+  const png = createPlaceholderPng(name);
+  if (format === "png") return png;
+  return sharp(png).jpeg({ quality: 92 }).toBuffer();
 }
 
 function createPlaceholderPng(name: string): Buffer {

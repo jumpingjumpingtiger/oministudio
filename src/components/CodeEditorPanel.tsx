@@ -38,6 +38,8 @@ interface CodeEditorPanelProps {
   isGenerating?: boolean;
   generationLive?: GenerationLiveState;
   onRefresh: () => void;
+  /** When false the panel stays mounted but hidden (preserves editor state). */
+  panelVisible?: boolean;
 }
 
 function getFileStatus(
@@ -207,6 +209,7 @@ export function CodeEditorPanel({
   isGenerating,
   generationLive,
   onRefresh,
+  panelVisible = true,
 }: CodeEditorPanelProps) {
   const [files, setFiles] = useState<string[]>([]);
   const [openTabs, setOpenTabs] = useState<string[]>([]);
@@ -394,22 +397,18 @@ export function CodeEditorPanel({
     setEditorTheme(getStoredEditorTheme());
   }, []);
 
-  // Reset editor state when switching projects (version switches remount via parent key)
   useEffect(() => {
-    editorEpochRef.current += 1;
-
-    if (liveSyncRafRef.current !== null) {
-      cancelAnimationFrame(liveSyncRafRef.current);
-      liveSyncRafRef.current = null;
-    }
-    pendingLiveSyncRef.current = null;
-
-    setOpenTabs([]);
-    setActiveFilePath(null);
-    setEditorContents({});
-    setSavedContents({});
-    lastSyncedLiveRef.current = "";
-  }, [projectId]);
+    if (!panelVisible || !editorReadyRef.current) return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    const frame = requestAnimationFrame(() => {
+      editor.layout();
+      if (activeFilePath) {
+        attachModelForPath(activeFilePath);
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [panelVisible, activeFilePath, attachModelForPath]);
 
   useEffect(() => {
     if (isGenerating) return;
@@ -454,45 +453,6 @@ export function CodeEditorPanel({
     () => collectExpandDirs(displayFiles),
     [displayFiles]
   );
-
-  // Incremental tree + tab open on file_planned / visible files
-  useEffect(() => {
-    if (!isGenerating || !generationLive) return;
-
-    const incoming = [
-      ...generationLive.visibleFiles,
-      ...(generationLive.writingFilePath ? [generationLive.writingFilePath] : []),
-    ];
-
-    if (incoming.length === 0) return;
-
-    setOpenTabs((prev) => {
-      let next = prev;
-      for (const path of incoming) {
-        next = addUniqueTab(next, path);
-      }
-      return next;
-    });
-  }, [isGenerating, generationLive?.visibleFiles, generationLive?.writingFilePath]);
-
-  // Auto-focus tab on the file being written
-  useEffect(() => {
-    if (!isGenerating || !generationLive) return;
-
-    const focusPath =
-      generationLive.writingFilePath ||
-      generationLive.lastFileWritten ||
-      null;
-
-    if (!focusPath) return;
-
-    setOpenTabs((prev) => addUniqueTab(prev, focusPath));
-    setActiveFilePath(focusPath);
-  }, [
-    isGenerating,
-    generationLive?.writingFilePath,
-    generationLive?.lastFileWritten,
-  ]);
 
   // Attach Monaco model when active tab changes (defer until editor instance is mounted)
   useEffect(() => {

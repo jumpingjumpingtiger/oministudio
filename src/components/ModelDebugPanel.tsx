@@ -1,25 +1,53 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Bug, GripVertical, Loader2, X } from "lucide-react";
+import { Bug, Download, GripVertical, Loader2, X } from "lucide-react";
 import clsx from "clsx";
 import { useDragPosition } from "@/hooks/useDragPosition";
 
+type DebugTab = "brain" | "image" | "png";
+
 interface LlmConfig {
-  brain: { provider: string; model: string; configured: boolean };
-  image: { provider: string; model: string; configured: boolean };
+  brain: { provider: string; model: string; configured: boolean; apiKeyEnv: string };
+  image: { provider: string; model: string; configured: boolean; apiKeyEnv: string };
+  png: { converter: string; available: boolean };
+}
+
+interface PngConvertResult {
+  preview: string;
+  fileName: string;
+  png: {
+    isValidPngBefore: boolean;
+    isValidPngAfter: boolean;
+    isFakePngBefore?: boolean;
+    isFakePngAfter?: boolean;
+    isRealPng: boolean;
+    normalized: boolean;
+    detectedFormatBefore: string | null;
+    detectedFormatAfter: string | null;
+  };
 }
 
 export function ModelDebugPanel() {
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<"brain" | "image">("brain");
+  const [tab, setTab] = useState<DebugTab>("brain");
   const [prompt, setPrompt] = useState("");
+  const [pngFile, setPngFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [config, setConfig] = useState<LlmConfig | null>(null);
   const [output, setOutput] = useState<string>("");
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [pngResult, setPngResult] = useState<PngConvertResult | null>(null);
+  const [uploadPreview, setUploadPreview] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const drag = useDragPosition({ defaultTop: 64, defaultRight: 16 });
+
+  useEffect(() => {
+    return () => {
+      if (uploadPreview) URL.revokeObjectURL(uploadPreview);
+    };
+  }, [uploadPreview]);
 
   useEffect(() => {
     if (open && !config) {
@@ -30,17 +58,53 @@ export function ModelDebugPanel() {
     }
   }, [open, config]);
 
+  const handlePngFileChange = (file: File | null) => {
+    setPngFile(file);
+    setPngResult(null);
+    setOutput("");
+    setImagePreview(null);
+    if (uploadPreview) {
+      URL.revokeObjectURL(uploadPreview);
+    }
+    setUploadPreview(file ? URL.createObjectURL(file) : null);
+  };
+
+  const downloadConvertedPng = () => {
+    if (!pngResult?.preview) return;
+    const link = document.createElement("a");
+    link.href = pngResult.preview;
+    const baseName = pngResult.fileName.replace(/\.png$/i, "") || "image";
+    link.download = `${baseName}-real.png`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
   const handleRun = async () => {
-    if (!prompt.trim()) return;
+    if (tab === "png" ? !pngFile : !prompt.trim()) return;
     setLoading(true);
     setOutput("");
+    setImagePreview(null);
+    if (tab === "png") setPngResult(null);
 
     try {
-      const res = await fetch("/api/debug/llm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: tab, prompt: prompt.trim() }),
-      });
+      let res: Response;
+
+      if (tab === "png") {
+        const formData = new FormData();
+        formData.append("type", "png");
+        formData.append("file", pngFile!);
+        res = await fetch("/api/debug/llm", {
+          method: "POST",
+          body: formData,
+        });
+      } else {
+        res = await fetch("/api/debug/llm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: tab, prompt: prompt.trim() }),
+        });
+      }
 
       const data = await res.json();
 
@@ -49,7 +113,16 @@ export function ModelDebugPanel() {
         return;
       }
 
-      if (tab === "image" && data.result?.preview) {
+      if (tab === "png" && data.result?.preview) {
+        const result: PngConvertResult = {
+          preview: data.result.preview,
+          fileName: data.result.fileName ?? pngFile?.name ?? "image.png",
+          png: data.result.png,
+        };
+        setPngResult(result);
+        setImagePreview(result.preview);
+        setOutput(JSON.stringify({ ...data, result: { ...data.result, preview: "[base64 image omitted]" } }, null, 2));
+      } else if (tab === "image" && data.result?.preview) {
         setOutput(
           JSON.stringify(
             { ...data, result: { ...data.result, preview: "[base64 image omitted]" } },
@@ -59,7 +132,6 @@ export function ModelDebugPanel() {
         );
         setImagePreview(data.result.preview);
       } else {
-        setImagePreview(null);
         setOutput(JSON.stringify(data, null, 2));
       }
     } catch (err) {
@@ -75,6 +147,11 @@ export function ModelDebugPanel() {
       return;
     }
     setOpen(true);
+  };
+
+  const tabLabel = (t: DebugTab) => {
+    if (t === "png") return "PNG LLM";
+    return `${t} LLM`;
   };
 
   return (
@@ -106,56 +183,132 @@ export function ModelDebugPanel() {
               </button>
             </div>
 
-            <div className="flex gap-1 px-4 pt-3">
-              {(["brain", "image"] as const).map((t) => (
+            <div className="flex gap-1 px-4 pt-3 flex-wrap">
+              {(["brain", "image", "png"] as const).map((t) => (
                 <button
                   key={t}
                   onClick={() => {
                     setTab(t);
                     setOutput("");
                     setImagePreview(null);
+                    setPngResult(null);
                   }}
                   className={clsx(
                     "px-3 py-1.5 rounded-md text-xs font-medium capitalize",
                     tab === t ? "tab-active" : "text-[var(--muted)] hover-item"
                   )}
                 >
-                  {t} LLM
+                  {tabLabel(t)}
                 </button>
               ))}
             </div>
 
             {config && (
               <div className="px-4 pt-2 text-[10px] text-[var(--muted)]">
-                {tab === "brain"
-                  ? `${config.brain.provider} / ${config.brain.model} ${config.brain.configured ? "" : "(mock mode)"}`
-                  : `${config.image.provider} / ${config.image.model} ${config.image.configured ? "" : "(not configured)"}`}
+                {tab === "brain" &&
+                  `${config.brain.provider} / ${config.brain.model} · ${config.brain.apiKeyEnv} ${config.brain.configured ? "✓" : "(mock mode)"}`}
+                {tab === "image" &&
+                  `${config.image.provider} / ${config.image.model} · ${config.image.apiKeyEnv} ${config.image.configured ? "✓" : "(not configured)"}`}
+                {tab === "png" &&
+                  `${config.png.converter} · upload PNG, convert, and download a valid PNG`}
               </div>
             )}
 
             <div className="p-4 space-y-3 flex-1 overflow-y-auto">
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder={
-                  tab === "brain"
-                    ? "Enter a game prompt to test brain LLM..."
-                    : "Enter an image prompt to test image LLM..."
-                }
-                rows={3}
-                className="w-full px-3 py-2 text-sm rounded-lg input-field resize-none"
-              />
+              {tab === "png" ? (
+                <div className="space-y-3">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/png,.png"
+                    className="hidden"
+                    onChange={(e) => handlePngFileChange(e.target.files?.[0] ?? null)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="btn-ghost text-xs px-3 py-2 w-full text-left border border-dashed border-[var(--panel-border)] rounded-lg"
+                  >
+                    {pngFile ? pngFile.name : "Upload a PNG file…"}
+                  </button>
 
-              <button
-                onClick={handleRun}
-                disabled={loading || !prompt.trim()}
-                className="btn-primary flex items-center gap-2 text-xs"
-              >
-                {loading && <Loader2 size={12} className="animate-spin" />}
-                Run Test
-              </button>
+                  {uploadPreview && (
+                    <div className="space-y-1">
+                      <p className="text-[10px] text-[var(--muted)]">Original upload</p>
+                      <div className="border border-[var(--panel-border)] rounded-lg p-2">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={uploadPreview}
+                          alt="Uploaded PNG"
+                          className="max-h-36 mx-auto rounded"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder={
+                    tab === "brain"
+                      ? "Enter a game prompt to test brain LLM..."
+                      : "Enter an image prompt to test image LLM..."
+                  }
+                  rows={3}
+                  className="w-full px-3 py-2 text-sm rounded-lg input-field resize-none"
+                />
+              )}
 
-              {imagePreview && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={handleRun}
+                  disabled={loading || (tab === "png" ? !pngFile : !prompt.trim())}
+                  className="btn-primary flex items-center gap-2 text-xs"
+                >
+                  {loading && <Loader2 size={12} className="animate-spin" />}
+                  {tab === "png" ? "Convert to real PNG" : "Run Test"}
+                </button>
+
+                {tab === "png" && pngResult && (
+                  <button
+                    onClick={downloadConvertedPng}
+                    className="btn-ghost flex items-center gap-2 text-xs border border-[var(--panel-border)]"
+                  >
+                    <Download size={12} />
+                    Download PNG
+                  </button>
+                )}
+              </div>
+
+              {tab === "png" && pngResult && (
+                <div className="text-[10px] text-[var(--muted)] space-y-0.5">
+                  <p>
+                    Before: {pngResult.png.detectedFormatBefore ?? "unknown"}
+                    {pngResult.png.isFakePngBefore
+                      ? " (fake PNG)"
+                      : pngResult.png.isValidPngBefore
+                        ? " (valid PNG)"
+                        : " (invalid PNG)"}
+                  </p>
+                  <p>
+                    After: {pngResult.png.detectedFormatAfter ?? "unknown"}
+                    {pngResult.png.isRealPng ? " (real PNG ✓)" : " (still invalid)"}
+                  </p>
+                </div>
+              )}
+
+              {imagePreview && tab === "png" && pngResult && (
+                <div className="space-y-1">
+                  <p className="text-[10px] text-[var(--muted)]">Converted PNG</p>
+                  <div className="border border-[var(--panel-border)] rounded-lg p-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={imagePreview} alt="Converted PNG" className="max-h-48 mx-auto rounded" />
+                  </div>
+                </div>
+              )}
+
+              {imagePreview && tab === "image" && (
                 <div className="border border-[var(--panel-border)] rounded-lg p-2">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={imagePreview} alt="Debug output" className="max-h-48 mx-auto rounded" />

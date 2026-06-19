@@ -1,7 +1,11 @@
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { getDoubaoBaseUrl, getLlmConfig } from "@/lib/engine/llm-config";
+import {
+  getBrainDoubaoBaseUrl,
+  getLlmConfig,
+  requireBrainApiKey,
+} from "@/lib/engine/llm-config";
 import { extractJsonFromText } from "@/lib/engine/llm-providers/json-utils";
 
 export async function callBrainLlm(
@@ -29,9 +33,7 @@ async function callOpenAiBrain(
   userPrompt: string,
   model: string
 ): Promise<string> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
-
+  const apiKey = requireBrainApiKey("openai");
   const client = new OpenAI({ apiKey });
   const response = await client.chat.completions.create({
     model,
@@ -54,9 +56,7 @@ async function callClaudeBrain(
   userPrompt: string,
   model: string
 ): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not configured");
-
+  const apiKey = requireBrainApiKey("claude");
   const client = new Anthropic({ apiKey });
   const response = await client.messages.create({
     model,
@@ -78,9 +78,7 @@ async function callGoogleBrain(
   userPrompt: string,
   model: string
 ): Promise<string> {
-  const apiKey = process.env.GOOGLE_API_KEY;
-  if (!apiKey) throw new Error("GOOGLE_API_KEY is not configured");
-
+  const apiKey = requireBrainApiKey("google");
   const genAI = new GoogleGenerativeAI(apiKey);
   const gemini = genAI.getGenerativeModel({
     model,
@@ -102,12 +100,10 @@ async function callDoubaoBrain(
   userPrompt: string,
   model: string
 ): Promise<string> {
-  const apiKey = process.env.DOUBAO_API_KEY;
-  if (!apiKey) throw new Error("DOUBAO_API_KEY is not configured");
-
+  const apiKey = requireBrainApiKey("doubao");
   const client = new OpenAI({
     apiKey,
-    baseURL: getDoubaoBaseUrl(),
+    baseURL: getBrainDoubaoBaseUrl(),
   });
 
   const response = await client.chat.completions.create({

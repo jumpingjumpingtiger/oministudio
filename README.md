@@ -81,6 +81,7 @@ Each version stores a CSV at `.data/project/assets/{projectId}/{versionId}/uri.c
 | `assetId` | Stable ID for the asset record and file on disk |
 | `prompt` | Base64-encoded generation prompt for the Expert LLM |
 | `regenerate` | `true` = dispatch to Expert LLM; `false` = reuse existing asset from library |
+| `format` | Image output format: `png` (sprites with transparency), `jpeg`/`jpg` (backgrounds). Only `png` assets are normalized to real PNG; JPEG/JPG are stored as-is |
 
 Game code references `asset://…` URIs; the play route and preview inject a resolver that maps them to the `url` values from the active version’s URI file.
 
@@ -96,7 +97,7 @@ flowchart LR
     A[Game project] --> V4[Game versionN] --> UN[URI file vN] --> PALL[Assets library]
 
 ```
-- **One library per project** — Binary files live at `.data/project/assets/{projectId}/{type}/{assetId}.png` (or OSS in production).
+- **One library per project** — Binary files live at `.data/project/assets/{projectId}/{type}/{assetId}.{png|jpeg|jpg}` (or OSS in production).
 - **One URI file per version** — Defines which library entries this version uses.
 - **Immutable updates** — Replacing an asset creates a new `assetId`/file; older versions keep pointing at the previous URL.
 - **Reuse** — Brain LLM sets `regenerate: false` for unchanged assets; dispatch skips expert generation and reuses the existing URL
@@ -213,11 +214,20 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | `BRAIN_LLM_MODEL` | Brain LLM model name | Provider default |
 | `IMAGE_LLM_PROVIDER` | Image LLM provider: `openai`, `google`, `doubao` | `openai` |
 | `IMAGE_LLM_MODEL` | Image generation model name | Provider default |
-| `OPENAI_API_KEY` | OpenAI API key | — |
-| `ANTHROPIC_API_KEY` | Anthropic (Claude) API key | — |
-| `GOOGLE_API_KEY` | Google AI API key | — |
-| `DOUBAO_API_KEY` | Doubao (Volcengine) API key | — |
-| `DOUBAO_BASE_URL` | Doubao OpenAI-compatible base URL | Volcengine default |
+| `BRAIN_OPENAI_API_KEY` | OpenAI key for Brain LLM | — |
+| `BRAIN_ANTHROPIC_API_KEY` | Anthropic key for Brain LLM | — |
+| `BRAIN_GOOGLE_API_KEY` | Google key for Brain LLM | — |
+| `BRAIN_DOUBAO_API_KEY` | Doubao key for Brain LLM | — |
+| `BRAIN_DOUBAO_BASE_URL` | Doubao base URL for Brain LLM | Volcengine default |
+| `IMAGE_OPENAI_API_KEY` | OpenAI key for Image LLM | — |
+| `IMAGE_GOOGLE_API_KEY` | Google key for Image LLM | — |
+| `IMAGE_DOUBAO_API_KEY` | Doubao key for Image LLM | — |
+| `IMAGE_DOUBAO_BASE_URL` | Doubao base URL for Image LLM | Volcengine default |
+| `OPENAI_API_KEY` | Legacy shared OpenAI key (fallback) | — |
+| `ANTHROPIC_API_KEY` | Legacy shared Anthropic key (fallback) | — |
+| `GOOGLE_API_KEY` | Legacy shared Google key (fallback) | — |
+| `DOUBAO_API_KEY` | Legacy shared Doubao key (fallback) | — |
+| `DOUBAO_BASE_URL` | Legacy shared Doubao base URL (fallback) | Volcengine default |
 | `DOUBAO_IMAGE_SIZE` | Doubao image size (min 2560x1440 for Seedream 4.x+) | `2048x2048` |
 | `ENABLE_LOCAL_DATA_PROXY` | Serve `.data/` files via `/api/data/` in non-dev environments | `false` |
 

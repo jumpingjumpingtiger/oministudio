@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import {
+  extensionFromUrl,
+  imageFormatToExtension,
+  parseImageAssetFormat,
+} from "@/lib/asset-format";
 import { generateImageBuffer } from "@/lib/engine/llm-providers/image-provider";
 import { isImageLlmConfigured } from "@/lib/engine/llm-config";
+import { processGeneratedImage } from "@/lib/engine/image-post-process";
+import { isPngUpload } from "@/lib/engine/png-normalize";
 import {
   readPendingAssetsPayload,
   readUriCsv,
@@ -30,6 +37,7 @@ export async function GET(
     prompt: string;
     order: number;
     regenerate?: boolean;
+    format?: string;
   }[] = [];
 
   if (resolved) {
@@ -43,6 +51,7 @@ export async function GET(
         prompt: a.prompt,
         order: a.order,
         regenerate: a.regenerate,
+        format: a.format,
       }));
     }
   }
@@ -57,6 +66,7 @@ export async function GET(
         prompt: row.prompt,
         order: row.order,
         regenerate: row.regenerate,
+        format: row.format || "png",
       }))
     : pendingAssets.map((a) => ({
         id: "",
@@ -67,6 +77,7 @@ export async function GET(
         prompt: a.prompt,
         order: a.order,
         regenerate: a.regenerate,
+        format: a.format || "png",
       }));
 
   return NextResponse.json({
@@ -104,7 +115,15 @@ export async function POST(
   });
 
   const buffer = Buffer.from(await file.arrayBuffer());
-  const { url, filePath } = await writeAssetFile(id, "img", record.id, buffer);
+  const uploadExt = file.name.split(".").pop()?.toLowerCase() || "png";
+  const format = parseImageAssetFormat(
+    isPngUpload(file.name, file.type) ? "png" : uploadExt === "jpg" ? "jpg" : uploadExt
+  );
+  const ext = imageFormatToExtension(format);
+  const processed = isPngUpload(file.name, file.type)
+    ? await processGeneratedImage(buffer, "png")
+    : buffer;
+  const { url, filePath } = await writeAssetFile(id, "img", record.id, processed, ext);
 
   const asset = await prisma.asset.update({
     where: { id: record.id },
@@ -121,6 +140,7 @@ export async function POST(
       url,
       assetId: record.id,
       prompt: "",
+      format,
     });
     await resyncVersionCodeAssets(id, resolved.storageKey);
   }
@@ -178,28 +198,36 @@ export async function PATCH(
     },
   });
 
+  const assetFormat = parseImageAssetFormat(
+    existing.format || extensionFromUrl(existing.url || "") || "png"
+  );
+  const ext = imageFormatToExtension(assetFormat);
+
   let buffer: Buffer;
   if (file) {
     buffer = Buffer.from(await file.arrayBuffer());
+    if (isPngUpload(file.name, file.type)) {
+      buffer = await processGeneratedImage(buffer, "png");
+    }
   } else if (prompt && isImageLlmConfigured()) {
     try {
-      buffer = await generateImageBuffer(prompt);
+      buffer = await generateImageBuffer(prompt, assetFormat);
     } catch {
       const oldBuffer = await import("@/lib/storage").then((m) =>
-        m.readAssetFile(id, "img", existing.assetId)
+        m.readAssetFile(id, "img", existing.assetId, ext)
       );
       buffer = oldBuffer ?? Buffer.alloc(0);
     }
   } else {
     const { readAssetFile } = await import("@/lib/storage");
-    const oldBuffer = await readAssetFile(id, "img", existing.assetId);
+    const oldBuffer = await readAssetFile(id, "img", existing.assetId, ext);
     if (!oldBuffer) {
       return NextResponse.json({ error: "Original asset file not found" }, { status: 404 });
     }
     buffer = oldBuffer;
   }
 
-  const { url, filePath } = await writeAssetFile(id, "img", record.id, buffer);
+  const { url, filePath } = await writeAssetFile(id, "img", record.id, buffer, ext);
   const asset = await prisma.asset.update({
     where: { id: record.id },
     data: { url, filePath },
@@ -213,6 +241,7 @@ export async function PATCH(
     url,
     assetId: record.id,
     prompt: prompt ?? existing.prompt,
+    format: assetFormat,
   });
 
   await resyncVersionCodeAssets(id, resolved.storageKey, {

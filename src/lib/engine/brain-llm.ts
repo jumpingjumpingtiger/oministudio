@@ -41,6 +41,12 @@ Asset reuse (IMPORTANT when modifying an existing game):
 22. Set "regenerate": true when the asset is new OR the prompt changed and a new image is needed.
 23. Keep the same URI for unchanged assets so code references stay stable.
 
+Asset format (CRITICAL — choose per asset, do NOT default everything to png):
+24. Each asset MUST include "format": "png", "jpeg", or "jpg".
+25. Use "png" for sprites, characters, icons, tiles, UI elements that need transparency.
+26. Use "jpeg" or "jpg" for full-screen backgrounds, skyboxes, photos, gradients, and any opaque scenery — JPEG avoids broken transparency on large backgrounds.
+27. The generation prompt MUST explicitly state the output format, e.g. "PNG with transparent background" or "JPEG photo, no transparency, 800x600 pixels".
+
 Required JSON format:
 {
   "summary": "Brief description of changes made",
@@ -56,8 +62,9 @@ Required JSON format:
       "uri": "asset://img/player_sprite",
       "width": 64,
       "height": 64,
+      "format": "png",
       "regenerate": true,
-      "prompt": "A cute pixel art game character, side view, 64x64 pixels, transparent background..."
+      "prompt": "PNG sprite with transparent background: a cute pixel art game character, side view, 64x64 pixels..."
     }
   ]
 }`;
@@ -212,6 +219,7 @@ new Phaser.Game(config);`,
       prompt: "A cute 2D pixel art game character sprite, side view, colorful, transparent background, exactly 64x64 pixels",
       width: 64,
       height: 64,
+      format: "png",
       regenerate: true,
     },
     {
@@ -219,9 +227,10 @@ new Phaser.Game(config);`,
       name: "background",
       type: "img",
       uri: "asset://img/background",
-      prompt: "A beautiful 2D game background scenery, parallax style, sky with clouds, exactly 800x600 pixels",
+      prompt: "JPEG game background scenery, opaque, parallax style, sky with clouds, exactly 800x600 pixels, no transparency",
       width: 800,
       height: 600,
+      format: "jpeg",
       regenerate: true,
     },
     {
@@ -229,9 +238,10 @@ new Phaser.Game(config);`,
       name: "platform",
       type: "img",
       uri: "asset://img/platform",
-      prompt: "A 2D game platform tile, grass top with dirt bottom, pixel art style, exactly 200x32 pixels",
+      prompt: "PNG platform tile with transparent background, grass top with dirt bottom, pixel art, 200x32 pixels",
       width: 200,
       height: 32,
+      format: "png",
       regenerate: true,
     },
   ];

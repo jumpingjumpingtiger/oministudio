@@ -18,7 +18,7 @@ export type GenerationProgressEvent =
   | { type: "code_complete"; versionId: string; versionNumber: number; assetCount: number; summary: string }
   | {
       type: "assets_planned";
-      assets: { name: string; uri: string; regenerate: boolean }[];
+      assets: { name: string; uri: string; regenerate: boolean; format?: string }[];
     }
   | { type: "asset_generating"; name: string; uri: string; index: number; total: number }
   | { type: "asset_generated"; name: string; uri: string; assetId: string; url: string }
@@ -35,7 +35,7 @@ export interface GenerationLiveState {
   filePreviousContents: Record<string, string>;
   completedFiles: string[];
   writingFilePath: string | null;
-  plannedAssets: { name: string; uri: string; regenerate: boolean }[];
+  plannedAssets: { name: string; uri: string; regenerate: boolean; format?: string }[];
   generatingAssetUri: string | null;
   completedAssetUris: string[];
   lastFileWritten: string | null;

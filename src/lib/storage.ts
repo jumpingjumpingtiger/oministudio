@@ -35,9 +35,10 @@ export function getPendingAssetsPath(projectId: string, versionId: string): stri
 export function buildAssetUrl(
   projectId: string,
   type: AssetType,
-  assetId: string
+  assetId: string,
+  ext = "png"
 ): string {
-  return buildAssetDataUrl(projectId, type, assetId);
+  return buildAssetDataUrl(projectId, type, assetId, ext);
 }
 
 export async function ensureDir(dirPath: string): Promise<void> {
@@ -115,7 +116,7 @@ export async function writeAssetFile(
   const fullPath = path.join(dir, filename);
   await fs.writeFile(fullPath, buffer);
   const filePath = `${type}/${filename}`;
-  const url = buildAssetUrl(projectId, type, assetId);
+  const url = buildAssetUrl(projectId, type, assetId, ext);
   return { url, filePath };
 }
 
@@ -125,9 +126,16 @@ export async function readAssetFile(
   assetId: string,
   ext = "png"
 ): Promise<Buffer | null> {
-  const fullPath = path.join(getAssetTypeDir(projectId, type), `${assetId}.${ext}`);
-  if (!existsSync(fullPath)) return null;
-  return fs.readFile(fullPath);
+  const dir = getAssetTypeDir(projectId, type);
+  const primary = path.join(dir, `${assetId}.${ext}`);
+  if (existsSync(primary)) return fs.readFile(primary);
+
+  for (const fallback of ["png", "jpeg", "jpg"]) {
+    if (fallback === ext) continue;
+    const candidate = path.join(dir, `${assetId}.${fallback}`);
+    if (existsSync(candidate)) return fs.readFile(candidate);
+  }
+  return null;
 }
 
 export interface UriCsvRow {
@@ -139,6 +147,7 @@ export interface UriCsvRow {
   assetId: string;
   prompt: string;
   regenerate?: boolean;
+  format?: string;
 }
 
 export async function writeUriCsv(
@@ -148,11 +157,12 @@ export async function writeUriCsv(
 ): Promise<void> {
   const dir = getVersionAssetsDir(projectId, versionId);
   await ensureDir(dir);
-  const header = "order,name,type,uri,url,assetId,prompt,regenerate";
+  const header = "order,name,type,uri,url,assetId,prompt,regenerate,format";
   const lines = rows.map((row) => {
     const encodedPrompt = Buffer.from(row.prompt).toString("base64");
     const regenerate = row.regenerate === false ? "false" : "true";
-    return `${row.order},${escapeCsv(row.name)},${row.type},${escapeCsv(row.uri)},${escapeCsv(row.url)},${escapeCsv(row.assetId)},${encodedPrompt},${regenerate}`;
+    const format = row.format || "png";
+    return `${row.order},${escapeCsv(row.name)},${row.type},${escapeCsv(row.uri)},${escapeCsv(row.url)},${escapeCsv(row.assetId)},${encodedPrompt},${regenerate},${format}`;
   });
   await fs.writeFile(getUriCsvPath(projectId, versionId), [header, ...lines].join("\n"), "utf-8");
 }
@@ -170,11 +180,17 @@ export async function readUriCsv(
   const header = lines[0];
   const hasAssetId = header.includes("assetId");
   const hasRegenerate = header.includes("regenerate");
+  const hasFormat = header.includes("format");
 
   return lines.slice(1).map((line) => {
     const parts = parseCsvLine(line);
     const promptIdx = hasAssetId ? 6 : 5;
     const regenerateIdx = hasRegenerate ? (hasAssetId ? 7 : 6) : -1;
+    const formatIdx = hasFormat
+      ? regenerateIdx >= 0
+        ? regenerateIdx + 1
+        : promptIdx + 1
+      : -1;
     return {
       order: parseInt(parts[0] || "0", 10),
       name: parts[1] || "",
@@ -185,6 +201,7 @@ export async function readUriCsv(
       prompt: Buffer.from(parts[promptIdx] || "", "base64").toString("utf-8"),
       regenerate:
         regenerateIdx >= 0 ? parts[regenerateIdx] !== "false" : undefined,
+      format: formatIdx >= 0 ? parts[formatIdx] || "png" : "png",
     };
   });
 }

@@ -25,6 +25,7 @@ interface VersionAsset {
   prompt: string;
   order: number;
   regenerate?: boolean;
+  format?: string;
 }
 
 type AssetStatus = "pending" | "generating" | "done" | "reused";
@@ -102,11 +103,6 @@ export function AssetManager({
       setLoading(false);
     }
   }, [projectId, versionId]);
-
-  useEffect(() => {
-    selectedUriInitialized.current = false;
-    setSelectedUri(null);
-  }, [versionId, projectId]);
 
   useEffect(() => {
     fetchAssets();
@@ -359,6 +355,12 @@ export function AssetManager({
                     <p>
                       <span className="text-[var(--muted)]">URL: </span>
                       {normalizeLegacyAssetUrl(selected.url, projectId)}
+                    </p>
+                  )}
+                  {selected.format && (
+                    <p>
+                      <span className="text-[var(--muted)]">Format: </span>
+                      {selected.format}
                     </p>
                   )}
                   {selected.regenerate === false && (

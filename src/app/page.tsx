@@ -12,6 +12,10 @@ import type { GenerationLiveState, GenerationProgressEvent } from "@/lib/generat
 import { applyProgressToLiveState, EMPTY_LIVE_STATE } from "@/lib/generation-live";
 import type { RightPanelTab } from "@/lib/types";
 import { condensePromptToProjectName } from "@/lib/utils/project-name";
+import {
+  defaultWorkspaceTab,
+  workspaceKey,
+} from "@/lib/workspace-key";
 
 interface Project {
   id: string;
@@ -84,6 +88,8 @@ export default function HomePage() {
   const [versions, setVersions] = useState<Version[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activeTab, setActiveTab] = useState<RightPanelTab>("preview");
+  const [workspaceTabs, setWorkspaceTabs] = useState<Record<string, RightPanelTab>>({});
+  const [visitedWorkspaceKeys, setVisitedWorkspaceKeys] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [versionPanelVisible, setVersionPanelVisible] = useState(true);
   const [projectPanelVisible, setProjectPanelVisible] = useState(true);
@@ -303,7 +309,45 @@ export default function HomePage() {
 
   const effectiveRefreshKey = refreshKey + liveRefreshKey;
   const activeVersionId = versions.find((v) => v.isActive)?.id ?? null;
-  const previewVersionId = isGenerating ? generatingVersionId : activeVersionId;
+
+  const registerWorkspace = useCallback((projectId: string, versionId: string) => {
+    const key = workspaceKey(projectId, versionId);
+    setVisitedWorkspaceKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+    setWorkspaceTabs((prev) =>
+      prev[key] ? prev : { ...prev, [key]: defaultWorkspaceTab() }
+    );
+  }, []);
+
+  useEffect(() => {
+    if (selectedProjectId && activeVersionId) {
+      registerWorkspace(selectedProjectId, activeVersionId);
+    }
+  }, [selectedProjectId, activeVersionId, registerWorkspace]);
+
+  useEffect(() => {
+    if (selectedProjectId && generatingVersionId) {
+      registerWorkspace(selectedProjectId, generatingVersionId);
+    }
+  }, [selectedProjectId, generatingVersionId, registerWorkspace]);
+
+  const currentWorkspaceKey =
+    selectedProjectId && activeVersionId
+      ? workspaceKey(selectedProjectId, activeVersionId)
+      : null;
+
+  const resolvedActiveTab = currentWorkspaceKey
+    ? (workspaceTabs[currentWorkspaceKey] ?? defaultWorkspaceTab())
+    : activeTab;
+
+  const handleTabChange = useCallback(
+    (tab: RightPanelTab) => {
+      setActiveTab(tab);
+      if (currentWorkspaceKey) {
+        setWorkspaceTabs((prev) => ({ ...prev, [currentWorkspaceKey]: tab }));
+      }
+    },
+    [currentWorkspaceKey]
+  );
 
   const triggerRefresh = () => setRefreshKey((k) => k + 1);
 
@@ -370,11 +414,13 @@ export default function HomePage() {
           <div className="flex-1 min-h-0 overflow-hidden">
             <RightPanel
               projectId={selectedProjectId}
-              activeTab={activeTab}
-              onTabChange={setActiveTab}
+              activeVersionId={activeVersionId}
+              visitedWorkspaceKeys={visitedWorkspaceKeys}
+              activeTab={resolvedActiveTab}
+              onTabChange={handleTabChange}
               refreshKey={effectiveRefreshKey}
-              versionId={previewVersionId}
               isGenerating={isGenerating}
+              generatingVersionId={generatingVersionId}
               generationPhase={generationPhase}
               generationLive={generationLive}
               onRefresh={triggerRefresh}

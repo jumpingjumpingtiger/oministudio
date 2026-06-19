@@ -19,6 +19,8 @@ export interface GeneratedAsset {
   height?: number;
   /** When false, reuse existing asset from project pool if prompt unchanged */
   regenerate?: boolean;
+  /** Output image format: png (transparent sprites), jpeg/jpg (backgrounds) */
+  format?: "png" | "jpeg" | "jpg";
 }
 
 export interface BrainLlmResult {

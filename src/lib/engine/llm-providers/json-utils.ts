@@ -1,5 +1,6 @@
 import { jsonrepair } from "jsonrepair";
 import type { BrainLlmResult, GeneratedAsset, GeneratedFile } from "@/lib/types";
+import { parseImageAssetFormat } from "@/lib/asset-format";
 
 export function extractJsonFromText(text: string): string {
   const trimmed = text.trim();
@@ -49,6 +50,7 @@ interface RawBrainAsset {
   width?: number;
   height?: number;
   regenerate?: boolean;
+  format?: string;
 }
 
 interface RawBrainResult {
@@ -148,6 +150,7 @@ export function parseBrainResult(content: string): BrainLlmResult {
     width: asset.width,
     height: asset.height,
     regenerate: asset.regenerate,
+    format: parseImageAssetFormat(asset.format),
   }));
 
   return {

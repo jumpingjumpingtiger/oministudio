@@ -1,20 +1,27 @@
+import { extensionFromUrl } from "@/lib/asset-format";
+
 export function buildAssetPublicPath(
   projectId: string,
   type: string,
-  assetId: string
+  assetId: string,
+  ext = "png"
 ): string {
-  return `/api/data/project/assets/${projectId}/${type}/${assetId}.png`;
+  return `/api/data/project/assets/${projectId}/${type}/${assetId}.${ext}`;
 }
 
 export function getAssetPublicPath(
   projectId: string,
-  asset: { id: string; type?: string; url?: string }
+  asset: { id: string; type?: string; url?: string; format?: string }
 ): string {
   if (asset.url?.startsWith("/api/")) {
     return asset.url;
   }
   if (asset.id) {
-    return buildAssetPublicPath(projectId, asset.type || "img", asset.id);
+    const ext =
+      asset.format ||
+      extensionFromUrl(asset.url || "") ||
+      "png";
+    return buildAssetPublicPath(projectId, asset.type || "img", asset.id, ext);
   }
   return asset.url || "";
 }
