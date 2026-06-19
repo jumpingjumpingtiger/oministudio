@@ -1,0 +1,31 @@
+name: "Force Explicit Push Constraint"
+
+on:
+  push:
+    # Monitor pushes to all branches
+    branches:
+      - '**'
+
+jobs:
+  check-push-format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Analyze Git Push Metadata and Enforce Rules"
+        run: |
+          # 1. Dynamically retrieve the target remote branch name via GitHub Environment Variables
+          REMOTE_BRANCH="${{ github.ref_name }}"
+          
+          echo "======================================================================"
+          echo "🚨 [GitHub Server Action Hook] Security Review Mechanism Triggered!"
+          echo "======================================================================"
+          echo "Analysis Results:"
+          echo "• Detected target remote branch for this operation: [ $REMOTE_BRANCH ]"
+          echo ""
+          echo "📌 To ensure absolute safety in multi-branch collaboration, please copy and execute the following explicit command aligned with your current branch:"
+          echo ""
+          echo "   👉  git push origin ${REMOTE_BRANCH}:${REMOTE_BRANCH}"
+          echo ""
+          echo "======================================================================"
+          
+          # 2. Force the step to fail, blocking subsequent automated pipelines (CI/CD, Merges, etc.)
+          exit 1
