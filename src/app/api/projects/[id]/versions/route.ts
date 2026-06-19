@@ -9,7 +9,7 @@ export async function GET(
   const { id } = await params;
   const versions = await prisma.version.findMany({
     where: { projectId: id },
-    orderBy: { createdAt: "desc" },
+    orderBy: [{ versionNumber: "desc" }, { createdAt: "desc" }],
   });
 
   return NextResponse.json(versions);

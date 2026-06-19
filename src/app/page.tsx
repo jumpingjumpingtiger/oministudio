@@ -28,6 +28,8 @@ interface Version {
   summary: string;
   isActive: boolean;
   createdAt: string;
+  versionNumber?: number | null;
+  storageKey?: string;
 }
 
 interface ChatMessage {
@@ -175,6 +177,9 @@ export default function HomePage() {
 
   const handleSwitchVersion = async (versionId: string) => {
     if (!selectedProjectId) return;
+    setVersions((prev) =>
+      prev.map((v) => ({ ...v, isActive: v.id === versionId }))
+    );
     await fetch(`/api/projects/${selectedProjectId}/versions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -184,9 +189,18 @@ export default function HomePage() {
   };
 
   const handleProgressEvent = useCallback((event: GenerationProgressEvent) => {
+    const applyLiveUpdate = (liveEvent: GenerationProgressEvent) => {
+      setGenerationLive((prev) => applyProgressToLiveState(prev, liveEvent));
+    };
+
+    if (event.type === "file_content_progress") {
+      applyLiveUpdate(event);
+      return;
+    }
+
     flushSync(() => {
       setGenerationProgress((prev) => [...prev, event]);
-      setGenerationLive((prev) => applyProgressToLiveState(prev, event));
+      applyLiveUpdate(event);
     });
 
     if (event.type === "version_created") {
@@ -194,11 +208,10 @@ export default function HomePage() {
       setRefreshKey((k) => k + 1);
     } else if (
       event.type === "file_written" ||
-      event.type === "file_planned" ||
+      event.type === "code_complete" ||
       event.type === "asset_generated" ||
       event.type === "asset_reused" ||
-      event.type === "code_complete" ||
-      event.type === "assets_planned"
+      event.type === "complete"
     ) {
       setLiveRefreshKey((k) => k + 1);
     }
@@ -289,7 +302,8 @@ export default function HomePage() {
   };
 
   const effectiveRefreshKey = refreshKey + liveRefreshKey;
-  const previewVersionId = isGenerating ? generatingVersionId : null;
+  const activeVersionId = versions.find((v) => v.isActive)?.id ?? null;
+  const previewVersionId = isGenerating ? generatingVersionId : activeVersionId;
 
   const triggerRefresh = () => setRefreshKey((k) => k + 1);
 

@@ -9,6 +9,8 @@ interface Version {
   summary: string;
   isActive: boolean;
   createdAt: string;
+  versionNumber?: number | null;
+  storageKey?: string;
 }
 
 interface VersionPanelProps {
@@ -42,7 +44,12 @@ export function VersionPanel({
             No versions yet. Send a prompt to create your first game.
           </p>
         )}
-        {versions.map((version, index) => (
+        {versions.map((version) => {
+          const label =
+            version.versionNumber != null
+              ? `v${version.versionNumber}`
+              : version.storageKey || version.id.slice(0, 8);
+          return (
           <button
             key={version.id}
             onClick={() => onSwitch(version.id)}
@@ -54,7 +61,7 @@ export function VersionPanel({
             )}
           >
             <div className="flex items-center gap-1.5 mb-1">
-              <span className="font-medium">v{versions.length - index}</span>
+              <span className="font-medium">{label}</span>
               {version.isActive && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--accent)] text-white">
                   Active
@@ -67,7 +74,8 @@ export function VersionPanel({
               {new Date(version.createdAt).toLocaleString()}
             </div>
           </button>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

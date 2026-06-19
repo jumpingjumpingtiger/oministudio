@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { buildAssetMap, resolveAssetUris } from "@/lib/asset-resolver";
 import { listCodeFiles, readCodeFile, readUriCsv } from "@/lib/storage";
 import { normalizeLegacyAssetUrl } from "@/lib/utils/asset-url";
+import { resolveVersionStorageKey } from "@/lib/version-storage";
 
 export async function GET(
   request: NextRequest,
@@ -10,27 +11,32 @@ export async function GET(
 ) {
   const { id } = await params;
   const { searchParams } = new URL(request.url);
-  const versionId = searchParams.get("versionId");
+  const versionIdParam = searchParams.get("versionId");
 
-  const version = versionId
-    ? await prisma.version.findFirst({ where: { id: versionId, projectId: id } })
+  const version = versionIdParam
+    ? await prisma.version.findFirst({ where: { id: versionIdParam, projectId: id } })
     : await prisma.version.findFirst({ where: { projectId: id, isActive: true } });
 
   if (!version) {
     return NextResponse.json({ error: "No version available" }, { status: 404 });
   }
 
-  const files = await listCodeFiles(id, version.id);
+  const storageKey = await resolveVersionStorageKey(id, version.id);
+  if (!storageKey) {
+    return NextResponse.json({ error: "Version storage not found" }, { status: 404 });
+  }
+
+  const files = await listCodeFiles(id, storageKey);
   const fileContents: Record<string, string> = {};
 
   for (const filePath of files) {
-    const content = await readCodeFile(id, version.id, filePath);
+    const content = await readCodeFile(id, storageKey, filePath);
     if (content !== null) {
       fileContents[filePath] = content;
     }
   }
 
-  const uriCsv = await readUriCsv(id, version.id);
+  const uriCsv = await readUriCsv(id, storageKey);
   const assetUrlMap = buildAssetMap(uriCsv);
   for (const key of Object.keys(assetUrlMap)) {
     assetUrlMap[key] = normalizeLegacyAssetUrl(assetUrlMap[key], id);
@@ -54,10 +60,13 @@ export async function GET(
         orderBy: { createdAt: "desc" },
       });
 
-  return NextResponse.json({
-    versionId: version.id,
-    files: fileContents,
-    assets,
-    uriCsv,
-  });
+  return NextResponse.json(
+    {
+      versionId: version.id,
+      files: fileContents,
+      assets,
+      uriCsv,
+    },
+    { headers: { "Cache-Control": "no-store" } }
+  );
 }

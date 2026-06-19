@@ -9,19 +9,9 @@ import {
   writeAssetFile,
   type UriCsvRow,
 } from "@/lib/storage";
-
-async function getActiveVersionId(projectId: string, versionId?: string | null) {
-  if (versionId) {
-    const version = await prisma.version.findFirst({
-      where: { id: versionId, projectId },
-    });
-    return version?.id ?? null;
-  }
-  const active = await prisma.version.findFirst({
-    where: { projectId, isActive: true },
-  });
-  return active?.id ?? null;
-}
+import { resyncVersionCodeAssets } from "@/lib/version-code-sync";
+import { buildAssetDataUrl } from "@/lib/data-proxy";
+import { resolveVersionStorageKeyParam } from "@/lib/version-storage";
 
 export async function GET(
   request: NextRequest,
@@ -30,7 +20,7 @@ export async function GET(
   const { id } = await params;
   const { searchParams } = new URL(request.url);
   const versionIdParam = searchParams.get("versionId");
-  const activeVersionId = await getActiveVersionId(id, versionIdParam);
+  const resolved = await resolveVersionStorageKeyParam(id, versionIdParam);
 
   let uriCsv: UriCsvRow[] = [];
   let pendingAssets: {
@@ -42,10 +32,10 @@ export async function GET(
     regenerate?: boolean;
   }[] = [];
 
-  if (activeVersionId) {
-    uriCsv = await readUriCsv(id, activeVersionId);
+  if (resolved) {
+    uriCsv = await readUriCsv(id, resolved.storageKey);
     if (uriCsv.length === 0) {
-      const payload = await readPendingAssetsPayload(id, activeVersionId);
+      const payload = await readPendingAssetsPayload(id, resolved.storageKey);
       pendingAssets = payload.assets.map((a) => ({
         name: a.name,
         uri: a.uri,
@@ -80,7 +70,7 @@ export async function GET(
       }));
 
   return NextResponse.json({
-    versionId: activeVersionId,
+    versionId: resolved?.versionId ?? null,
     assets: versionAssets,
     uriCsv,
   });
@@ -100,7 +90,7 @@ export async function POST(
     return NextResponse.json({ error: "File and name are required" }, { status: 400 });
   }
 
-  const activeVersionId = await getActiveVersionId(id, versionId);
+  const resolved = await resolveVersionStorageKeyParam(id, versionId);
   const uri = `asset://img/${name.trim()}`;
 
   const record = await prisma.asset.create({
@@ -121,9 +111,9 @@ export async function POST(
     data: { url, filePath },
   });
 
-  if (activeVersionId) {
-    const rows = await readUriCsv(id, activeVersionId);
-    await replaceUriCsvAsset(id, activeVersionId, uri, {
+  if (resolved) {
+    const rows = await readUriCsv(id, resolved.storageKey);
+    await replaceUriCsvAsset(id, resolved.storageKey, uri, {
       order: rows.length,
       name: name.trim(),
       type: "img",
@@ -132,6 +122,7 @@ export async function POST(
       assetId: record.id,
       prompt: "",
     });
+    await resyncVersionCodeAssets(id, resolved.storageKey);
   }
 
   return NextResponse.json(asset, { status: 201 });
@@ -166,12 +157,12 @@ export async function PATCH(
     return NextResponse.json({ error: "uri is required" }, { status: 400 });
   }
 
-  const activeVersionId = await getActiveVersionId(id, versionId);
-  if (!activeVersionId) {
+  const resolved = await resolveVersionStorageKeyParam(id, versionId);
+  if (!resolved) {
     return NextResponse.json({ error: "No active version" }, { status: 404 });
   }
 
-  const rows = await readUriCsv(id, activeVersionId);
+  const rows = await readUriCsv(id, resolved.storageKey);
   const existing = rows.find((r) => r.uri === uri);
   if (!existing) {
     return NextResponse.json({ error: "Asset not found in version" }, { status: 404 });
@@ -214,7 +205,7 @@ export async function PATCH(
     data: { url, filePath },
   });
 
-  await replaceUriCsvAsset(id, activeVersionId, uri, {
+  await replaceUriCsvAsset(id, resolved.storageKey, uri, {
     order: existing.order,
     name: existing.name,
     type: existing.type,
@@ -222,6 +213,13 @@ export async function PATCH(
     url,
     assetId: record.id,
     prompt: prompt ?? existing.prompt,
+  });
+
+  await resyncVersionCodeAssets(id, resolved.storageKey, {
+    replaceUrl: {
+      from: existing.url || buildAssetDataUrl(id, existing.type || "img", existing.assetId),
+      to: url,
+    },
   });
 
   return NextResponse.json(asset);
@@ -240,14 +238,15 @@ export async function DELETE(
     return NextResponse.json({ error: "uri is required" }, { status: 400 });
   }
 
-  const activeVersionId = await getActiveVersionId(id, versionId);
-  if (!activeVersionId) {
+  const resolved = await resolveVersionStorageKeyParam(id, versionId);
+  if (!resolved) {
     return NextResponse.json({ error: "No active version" }, { status: 404 });
   }
 
-  const rows = await readUriCsv(id, activeVersionId);
+  const rows = await readUriCsv(id, resolved.storageKey);
   const filtered = rows.filter((r) => r.uri !== uri);
   const { writeUriCsv } = await import("@/lib/storage");
-  await writeUriCsv(id, activeVersionId, filtered);
+  await writeUriCsv(id, resolved.storageKey, filtered);
+  await resyncVersionCodeAssets(id, resolved.storageKey);
   return NextResponse.json({ success: true });
 }

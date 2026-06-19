@@ -44,12 +44,27 @@ export function applyProgressToLiveState(
         ...state,
         visibleFiles: addVisibleFile(state.visibleFiles, event.path),
         fileChangeTypes: { ...state.fileChangeTypes, [event.path]: event.changeType },
+        fileContents: {
+          ...state.fileContents,
+          [event.path]: state.fileContents[event.path] ?? "",
+        },
       };
     case "file_writing":
       return {
         ...state,
         writingFilePath: event.path,
         visibleFiles: addVisibleFile(state.visibleFiles, event.path),
+        fileContents: {
+          ...state.fileContents,
+          [event.path]: state.fileContents[event.path] ?? "",
+        },
+      };
+    case "file_content_progress":
+      return {
+        ...state,
+        writingFilePath: event.path,
+        visibleFiles: addVisibleFile(state.visibleFiles, event.path),
+        fileContents: { ...state.fileContents, [event.path]: event.content },
       };
     case "file_written": {
       const nextPrevious =

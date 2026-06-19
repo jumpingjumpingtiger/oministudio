@@ -103,3 +103,18 @@ body {
 .hover-item:hover {
   background: var(--hover-bg);
 }
+
+@keyframes tree-item-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.tree-item-enter {
+  animation: tree-item-enter 0.28s ease-out;
+}

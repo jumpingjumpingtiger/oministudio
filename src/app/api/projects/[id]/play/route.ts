@@ -4,6 +4,7 @@ import { buildAssetMap, resolveAssetUris, buildAssetResolverScript, injectAssetR
 import { getCodeBaseHref, injectBaseTag, injectPreviewStyles, isLocalDataProxyEnabled } from "@/lib/data-proxy";
 import { readCodeFile, readUriCsv } from "@/lib/storage";
 import { normalizeLegacyAssetUrl } from "@/lib/utils/asset-url";
+import { resolveVersionStorageKey } from "@/lib/version-storage";
 
 export async function GET(
   request: NextRequest,
@@ -28,12 +29,17 @@ export async function GET(
     return NextResponse.json({ error: "No version available" }, { status: 404 });
   }
 
-  const html = await readCodeFile(projectId, version.id, "index.html");
+  const storageKey = await resolveVersionStorageKey(projectId, version.id);
+  if (!storageKey) {
+    return NextResponse.json({ error: "Version storage not found" }, { status: 404 });
+  }
+
+  const html = await readCodeFile(projectId, storageKey, "index.html");
   if (!html) {
     return NextResponse.json({ error: "index.html not found" }, { status: 404 });
   }
 
-  const uriCsv = await readUriCsv(projectId, version.id);
+  const uriCsv = await readUriCsv(projectId, storageKey);
   const assetUrlMap = buildAssetMap(uriCsv);
   for (const key of Object.keys(assetUrlMap)) {
     assetUrlMap[key] = normalizeLegacyAssetUrl(assetUrlMap[key], projectId);
@@ -41,7 +47,7 @@ export async function GET(
 
   let processedHtml = resolveAssetUris(html, assetUrlMap);
   processedHtml = injectAssetResolver(processedHtml, buildAssetResolverScript(assetUrlMap));
-  processedHtml = injectBaseTag(processedHtml, getCodeBaseHref(projectId, version.id));
+  processedHtml = injectBaseTag(processedHtml, getCodeBaseHref(projectId, storageKey));
   processedHtml = injectPreviewStyles(processedHtml);
 
   return new NextResponse(processedHtml, {

@@ -149,10 +149,11 @@ export function AssetManager({
   const getImageSrc = (asset: VersionAsset) => {
     if (!asset.id) return "";
     const assetPath = normalizeLegacyAssetUrl(
-      getAssetPublicPath(projectId, asset),
+      asset.url?.startsWith("/api/") ? asset.url : getAssetPublicPath(projectId, asset),
       projectId
     );
-    return toAbsoluteUrl(assetPath);
+    const bust = encodeURIComponent(asset.id);
+    return `${toAbsoluteUrl(assetPath)}${assetPath.includes("?") ? "&" : "?"}v=${bust}`;
   };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {

@@ -23,7 +23,7 @@ export async function GET(
     return new NextResponse(new Uint8Array(file.buffer), {
       headers: {
         "Content-Type": file.mimeType,
-        "Cache-Control": "public, max-age=60",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
       },
     });
   } catch (error) {

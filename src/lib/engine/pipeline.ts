@@ -17,7 +17,47 @@ import {
   writeUriCsv,
 } from "@/lib/storage";
 import { getProgressMessages } from "@/lib/utils/progress-messages";
+import {
+  formatVersionStorageKey,
+  resolveVersionStorageKey,
+} from "@/lib/version-storage";
 import type { GeneratedFile } from "@/lib/types";
+import type { FileChangeType } from "@/lib/generation-progress";
+
+const STREAM_CHUNK_SIZE = 48;
+const STREAM_DELAY_MS = 10;
+
+async function streamFileToClient(
+  emit: (event: Parameters<ProgressCallback>[0]) => Promise<void>,
+  path: string,
+  content: string,
+  meta: { previousContent?: string; changeType: FileChangeType }
+): Promise<void> {
+  await emit({ type: "file_planned", path, changeType: meta.changeType });
+  await emit({ type: "file_writing", path });
+
+  if (content.length === 0) {
+    await emit({ type: "file_content_progress", path, content: "" });
+  } else {
+    for (let end = STREAM_CHUNK_SIZE; end < content.length; end += STREAM_CHUNK_SIZE) {
+      await emit({
+        type: "file_content_progress",
+        path,
+        content: content.slice(0, end),
+      });
+      await new Promise((resolve) => setTimeout(resolve, STREAM_DELAY_MS));
+    }
+    await emit({ type: "file_content_progress", path, content });
+  }
+
+  await emit({
+    type: "file_written",
+    path,
+    content,
+    previousContent: meta.previousContent,
+    changeType: meta.changeType,
+  });
+}
 
 export interface GenerateCodeOptions {
   projectId: string;
@@ -122,6 +162,7 @@ export async function generateCodePhase(
 
   const versionCount = await prisma.version.count({ where: { projectId } });
   const versionNumber = versionCount + 1;
+  const storageKey = formatVersionStorageKey(versionNumber);
 
   const version = await prisma.version.create({
     data: {
@@ -129,6 +170,8 @@ export async function generateCodePhase(
       prompt,
       summary: brainResult.summary,
       isActive: true,
+      versionNumber,
+      storageKey,
     },
   });
 
@@ -139,7 +182,10 @@ export async function generateCodePhase(
   });
 
   if (activeVersion) {
-    await copyCodeVersion(projectId, activeVersion.id, version.id);
+    const fromStorageKey = await resolveVersionStorageKey(projectId, activeVersion.id);
+    if (fromStorageKey) {
+      await copyCodeVersion(projectId, fromStorageKey, storageKey);
+    }
   }
 
   await emit({
@@ -159,33 +205,31 @@ export async function generateCodePhase(
 
   await emit({ type: "status", message: msg.writing });
 
-  const previousPaths = activeVersion
-    ? await listCodeFiles(projectId, activeVersion.id)
+  const activeStorageKey = activeVersion
+    ? await resolveVersionStorageKey(projectId, activeVersion.id)
+    : null;
+  const previousPaths = activeStorageKey
+    ? await listCodeFiles(projectId, activeStorageKey)
     : [];
   const previousPathSet = new Set(previousPaths);
 
   for (const file of brainResult.files) {
     const previousContent = activeVersion
-      ? await readCodeFile(projectId, version.id, file.path)
+      ? await readCodeFile(projectId, storageKey, file.path)
       : null;
     const isNew = !previousPathSet.has(file.path);
     const isModified =
       !isNew && previousContent !== null && previousContent !== file.content;
     const changeType = isNew ? "new" : isModified ? "modified" : "unchanged";
 
-    await emit({ type: "file_planned", path: file.path, changeType });
-    await emit({ type: "file_writing", path: file.path });
-    await writeCodeFile(projectId, version.id, file.path, file.content);
-    await emit({
-      type: "file_written",
-      path: file.path,
-      content: file.content,
+    await streamFileToClient(emit, file.path, file.content, {
       previousContent: previousContent ?? undefined,
       changeType,
     });
+    await writeCodeFile(projectId, storageKey, file.path, file.content);
   }
 
-  await writePendingAssets(projectId, version.id, brainResult.assets, {
+  await writePendingAssets(projectId, storageKey, brainResult.assets, {
     versionNumber,
   });
 
@@ -221,7 +265,12 @@ export async function generateAssetsPhase(
     throw new Error("Version not found");
   }
 
-  const payload = await readPendingAssetsPayload(projectId, versionId);
+  const storageKey = await resolveVersionStorageKey(projectId, versionId);
+  if (!storageKey) {
+    throw new Error("Version storage not found");
+  }
+
+  const payload = await readPendingAssetsPayload(projectId, storageKey);
   const msg = getProgressMessages();
 
   const pendingAssets = payload.assets;
@@ -256,7 +305,7 @@ export async function generateAssetsPhase(
         total: assetEvent.total,
       });
     } else if (assetEvent.type === "generated") {
-      void upsertUriCsvRow(projectId, versionId, toUriRow(assetEvent.result));
+      void upsertUriCsvRow(projectId, storageKey, toUriRow(assetEvent.result));
       await emit({
         type: "asset_generated",
         name: assetEvent.name,
@@ -265,7 +314,7 @@ export async function generateAssetsPhase(
         url: assetEvent.url,
       });
     } else if (assetEvent.type === "reused") {
-      void upsertUriCsvRow(projectId, versionId, toUriRow(assetEvent.result));
+      void upsertUriCsvRow(projectId, storageKey, toUriRow(assetEvent.result));
       await emit({
         type: "asset_reused",
         name: assetEvent.name,
@@ -287,28 +336,23 @@ export async function generateAssetsPhase(
 
   await emit({ type: "status", message: msg.resolving });
 
-  const filePaths = await listCodeFiles(projectId, versionId);
+  const filePaths = await listCodeFiles(projectId, storageKey);
   for (const filePath of filePaths) {
-    const content = await readCodeFile(projectId, versionId, filePath);
+    const content = await readCodeFile(projectId, storageKey, filePath);
     if (content === null) continue;
     const resolvedContent = resolveAssetUris(content, assetUrlMap);
     if (resolvedContent === content) continue;
 
-    await emit({ type: "file_planned", path: filePath, changeType: "modified" });
-    await emit({ type: "file_writing", path: filePath });
-    await writeCodeFile(projectId, versionId, filePath, resolvedContent);
-    await emit({
-      type: "file_written",
-      path: filePath,
-      content: resolvedContent,
+    await streamFileToClient(emit, filePath, resolvedContent, {
       previousContent: content,
       changeType: "modified",
     });
+    await writeCodeFile(projectId, storageKey, filePath, resolvedContent);
   }
 
   const uriRows = dispatchResults.map(toUriRow);
-  await writeUriCsv(projectId, versionId, uriRows);
-  await deletePendingAssets(projectId, versionId);
+  await writeUriCsv(projectId, storageKey, uriRows);
+  await deletePendingAssets(projectId, storageKey);
 
   const summaryWithVersion = `${version.summary}\n\n— Version v${versionNumber}`;
 

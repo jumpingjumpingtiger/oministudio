@@ -7,6 +7,7 @@ export type GenerationProgressEvent =
   | { type: "files_planned"; files: string[]; assetCount: number }
   | { type: "file_planned"; path: string; changeType: FileChangeType }
   | { type: "file_writing"; path: string }
+  | { type: "file_content_progress"; path: string; content: string }
   | {
       type: "file_written";
       path: string;

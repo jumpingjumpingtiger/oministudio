@@ -20,16 +20,19 @@ model Project {
 }
 
 model Version {
-  id        String   @id @default(cuid())
-  projectId String
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  prompt    String
-  summary   String   @default("")
-  isActive  Boolean  @default(false)
-  createdAt DateTime @default(now())
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  versionNumber Int?
+  storageKey   String   @default("")
+  prompt       String
+  summary      String   @default("")
+  isActive     Boolean  @default(false)
+  createdAt    DateTime @default(now())
 
   messages ChatMessage[]
 
+  @@unique([projectId, versionNumber])
   @@index([projectId])
 }
 

@@ -73,10 +73,12 @@ export function RightPanel({
                 refreshKey={refreshKey}
                 versionId={versionId}
                 isGenerating={isGenerating}
+                generationPhase={generationPhase}
               />
             )}
             {activeTab === "code" && (
               <CodeEditorPanel
+                key={`code-${projectId}-${versionId ?? "draft"}`}
                 projectId={projectId}
                 refreshKey={refreshKey}
                 versionId={versionId}
