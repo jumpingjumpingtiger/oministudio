@@ -32,9 +32,17 @@ export async function POST(
       },
     });
 
-    return createSseStream(async (send) => {
-      await generateCodePhase({ projectId, prompt: prompt.trim(), onProgress: send });
-    });
+    return createSseStream(
+      async (send) => {
+        await generateCodePhase({
+          projectId,
+          prompt: prompt.trim(),
+          onProgress: send,
+          signal: request.signal,
+        });
+      },
+      { signal: request.signal }
+    );
   } catch (error) {
     console.error("Generate code error:", error);
     return Response.json(

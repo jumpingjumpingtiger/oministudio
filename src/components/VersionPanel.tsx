@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronLeft, Clock, GitBranch } from "lucide-react";
+import { ChevronLeft, Clock, GitBranch, Trash2 } from "lucide-react";
 import clsx from "clsx";
 
 interface Version {
@@ -16,6 +16,7 @@ interface Version {
 interface VersionPanelProps {
   versions: Version[];
   onSwitch: (versionId: string) => void;
+  onDelete: (versionId: string) => void;
   onHide: () => void;
   className?: string;
 }
@@ -23,6 +24,7 @@ interface VersionPanelProps {
 export function VersionPanel({
   versions,
   onSwitch,
+  onDelete,
   onHide,
   className,
 }: VersionPanelProps) {
@@ -50,17 +52,21 @@ export function VersionPanel({
               ? `v${version.versionNumber}`
               : version.storageKey || version.id.slice(0, 8);
           return (
-          <button
+          <div
             key={version.id}
-            onClick={() => onSwitch(version.id)}
             className={clsx(
-              "w-full text-left p-2 rounded-md text-xs transition-colors",
+              "w-full text-left p-2 rounded-md text-xs transition-colors group relative",
               version.isActive
                 ? "bg-[var(--accent)]/20 border border-[var(--accent)]/40"
-                : "hover-item border-transparent"
+                : "hover-item border border-transparent"
             )}
           >
-            <div className="flex items-center gap-1.5 mb-1">
+            <button
+              type="button"
+              onClick={() => onSwitch(version.id)}
+              className="w-full text-left"
+            >
+            <div className="flex items-center gap-1.5 mb-1 pr-6">
               <span className="font-medium">{label}</span>
               {version.isActive && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--accent)] text-white">
@@ -73,7 +79,21 @@ export function VersionPanel({
               <Clock size={10} />
               {new Date(version.createdAt).toLocaleString()}
             </div>
-          </button>
+            </button>
+            {versions.length > 1 && (
+              <button
+                type="button"
+                title="Delete version"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(version.id);
+                }}
+                className="absolute top-2 right-2 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-[var(--danger)]/10 text-[var(--muted)] hover:text-[var(--danger)]"
+              >
+                <Trash2 size={12} />
+              </button>
+            )}
+          </div>
           );
         })}
       </div>

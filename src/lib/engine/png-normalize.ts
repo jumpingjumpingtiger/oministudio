@@ -1,6 +1,7 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import sharp from "sharp";
+import { runExclusiveOnnx } from "@/lib/engine/native-onnx-lock";
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -267,7 +268,11 @@ async function convertWithImgly(buffer: Buffer, mimeType: string): Promise<Buffe
   const { removeBackground } = await import("@imgly/background-removal-node");
   const bytes = new Uint8Array(buffer);
   const inputBlob = new Blob([bytes], { type: mimeType });
-  const outputBlob = await removeBackground(inputBlob, getImglyConfig());
+  // Serialized with all other native ONNX work (e.g. local embeddings) so two
+  // onnxruntime-node consumers never run concurrently (avoids native double-free).
+  const outputBlob = await runExclusiveOnnx(() =>
+    removeBackground(inputBlob, getImglyConfig())
+  );
   return Buffer.from(await outputBlob.arrayBuffer());
 }
 

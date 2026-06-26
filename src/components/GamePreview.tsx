@@ -122,7 +122,7 @@ function GamePreviewInner({
         </div>
       </div>
 
-      <div className="flex-1 relative bg-[var(--input-bg)] min-h-0 flex items-center justify-center p-4">
+      <div className="flex-1 relative bg-[var(--input-bg)] min-h-0 overflow-auto">
         {codeGenerationActive && (
           <div className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-[var(--input-bg)] gap-2">
             <Loader2 size={28} className="animate-spin text-[var(--accent)]" />
@@ -137,13 +137,18 @@ function GamePreviewInner({
             <p className="text-sm text-[var(--muted)]">{error}</p>
           </div>
         )}
-        <iframe
-          ref={iframeRef}
-          className="w-full max-w-[960px] aspect-[4/3] max-h-full border-0 rounded-lg shadow-md border border-[var(--panel-border)] bg-[#eef1f5]"
-          sandbox="allow-scripts allow-same-origin"
-          title="Game Preview"
-          onLoad={() => setLoading(false)}
-        />
+        <div className="min-h-full flex items-center justify-center p-4">
+          <iframe
+            ref={iframeRef}
+            width={800}
+            height={600}
+            className="shrink-0 grow-0 border-0 rounded-lg shadow-md border border-[var(--panel-border)] bg-[#eef1f5]"
+            style={{ width: 800, height: 600, maxWidth: "100%" }}
+            sandbox="allow-scripts allow-same-origin"
+            title="Game Preview"
+            onLoad={() => setLoading(false)}
+          />
+        </div>
       </div>
     </>
   );

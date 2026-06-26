@@ -417,7 +417,13 @@ export function CodeEditorPanel({
 
   const displayFiles = useMemo(() => {
     if (!isGenerating || !generationLive) return files;
-    return [...new Set([...generationLive.visibleFiles, ...generationLive.completedFiles])].sort();
+    return [
+      ...new Set([
+        ...generationLive.plannedFiles,
+        ...generationLive.visibleFiles,
+        ...generationLive.completedFiles,
+      ]),
+    ].sort();
   }, [files, isGenerating, generationLive]);
 
   const prevTreePathsRef = useRef<Set<string>>(new Set());
@@ -431,6 +437,7 @@ export function CodeEditorPanel({
 
     const currentPaths = new Set<string>();
     for (const filePath of [
+      ...generationLive.plannedFiles,
       ...generationLive.visibleFiles,
       ...generationLive.completedFiles,
     ]) {
@@ -447,7 +454,7 @@ export function CodeEditorPanel({
     setNewTreePaths(new Set(added));
     const timer = window.setTimeout(() => setNewTreePaths(new Set()), 500);
     return () => window.clearTimeout(timer);
-  }, [isGenerating, generationLive?.visibleFiles, generationLive?.completedFiles, generationLive]);
+  }, [isGenerating, generationLive?.plannedFiles, generationLive?.visibleFiles, generationLive?.completedFiles, generationLive]);
 
   const expandedDirs = useMemo(
     () => collectExpandDirs(displayFiles),
@@ -505,6 +512,14 @@ export function CodeEditorPanel({
       }
     };
   }, [isGenerating, activeFilePath, generationLive?.fileContents, syncModelContent]);
+
+  // Follow the file currently being streamed during generation
+  useEffect(() => {
+    if (!isGenerating || !generationLive?.writingFilePath) return;
+    const path = generationLive.writingFilePath;
+    setOpenTabs((prev) => addUniqueTab(prev, path));
+    setActiveFilePath(path);
+  }, [isGenerating, generationLive?.writingFilePath]);
 
   // Reload from server when generation finishes
   useEffect(() => {

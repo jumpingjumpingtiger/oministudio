@@ -3,6 +3,7 @@ import fs from "fs/promises";
 import { existsSync } from "fs";
 import { buildAssetDataUrl } from "@/lib/data-proxy";
 import type { GeneratedAsset } from "@/lib/types";
+import type { ChangeManifest } from "@/lib/change-manifest";
 
 const DATA_ROOT = path.join(process.cwd(), ".data");
 
@@ -253,7 +254,7 @@ export async function writePendingAssets(
   projectId: string,
   versionId: string,
   assets: GeneratedAsset[],
-  meta?: { versionNumber: number }
+  meta?: { versionNumber: number; changeManifest?: ChangeManifest }
 ): Promise<void> {
   const dir = getVersionAssetsDir(projectId, versionId);
   await ensureDir(dir);
@@ -277,7 +278,7 @@ export async function readPendingAssetsPayload(
   versionId: string
 ): Promise<{
   assets: GeneratedAsset[];
-  meta?: { versionNumber: number };
+  meta?: { versionNumber: number; changeManifest?: ChangeManifest };
 }> {
   const filePath = getPendingAssetsPath(projectId, versionId);
   if (!existsSync(filePath)) return { assets: [] };
@@ -356,6 +357,20 @@ export async function initProjectStorage(projectId: string): Promise<void> {
   await ensureDir(getAssetsDir(projectId));
   for (const type of ["img", "text", "audio"] as AssetType[]) {
     await ensureDir(getAssetTypeDir(projectId, type));
+  }
+}
+
+export async function deleteVersionStorage(
+  projectId: string,
+  storageKey: string
+): Promise<void> {
+  const codeDir = getCodeDir(projectId, storageKey);
+  const assetsDir = getVersionAssetsDir(projectId, storageKey);
+  if (existsSync(codeDir)) {
+    await fs.rm(codeDir, { recursive: true, force: true });
+  }
+  if (existsSync(assetsDir)) {
+    await fs.rm(assetsDir, { recursive: true, force: true });
   }
 }
 

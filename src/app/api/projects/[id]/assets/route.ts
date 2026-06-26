@@ -20,6 +20,57 @@ import { resyncVersionCodeAssets } from "@/lib/version-code-sync";
 import { buildAssetDataUrl } from "@/lib/data-proxy";
 import { resolveVersionStorageKeyParam } from "@/lib/version-storage";
 
+async function enrichAssetPrompts(
+  projectId: string,
+  assets: {
+    id: string;
+    name: string;
+    type: string;
+    uri: string;
+    url: string;
+    prompt: string;
+    order: number;
+    regenerate?: boolean;
+    format?: string;
+  }[]
+) {
+  const needsLookup = assets.filter((a) => !a.prompt?.trim() && (a.id || a.uri));
+  if (!needsLookup.length) return assets;
+
+  const byId = new Map<string, string>();
+  const ids = needsLookup.map((a) => a.id).filter(Boolean) as string[];
+  if (ids.length) {
+    const records = await prisma.asset.findMany({
+      where: { projectId, id: { in: ids } },
+      select: { id: true, prompt: true },
+    });
+    for (const r of records) {
+      if (r.prompt?.trim()) byId.set(r.id, r.prompt);
+    }
+  }
+
+  const byUri = new Map<string, string>();
+  const uris = needsLookup.map((a) => a.uri).filter(Boolean);
+  if (uris.length) {
+    const records = await prisma.asset.findMany({
+      where: { projectId, uri: { in: uris } },
+      orderBy: { createdAt: "desc" },
+      select: { uri: true, prompt: true },
+    });
+    for (const r of records) {
+      if (r.prompt?.trim() && !byUri.has(r.uri)) byUri.set(r.uri, r.prompt);
+    }
+  }
+
+  return assets.map((a) => {
+    if (a.prompt?.trim()) return a;
+    const fromId = a.id ? byId.get(a.id) : undefined;
+    const fromUri = byUri.get(a.uri);
+    const prompt = fromId || fromUri || a.prompt;
+    return prompt !== a.prompt ? { ...a, prompt } : a;
+  });
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -80,9 +131,11 @@ export async function GET(
         format: a.format || "png",
       }));
 
+  const assets = await enrichAssetPrompts(id, versionAssets);
+
   return NextResponse.json({
     versionId: resolved?.versionId ?? null,
-    assets: versionAssets,
+    assets,
     uriCsv,
   });
 }

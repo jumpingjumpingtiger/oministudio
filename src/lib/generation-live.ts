@@ -16,6 +16,8 @@ export const EMPTY_LIVE_STATE: GenerationLiveState = {
   generatingAssetUri: null,
   completedAssetUris: [],
   lastFileWritten: null,
+  nodeSteps: [],
+  changeManifest: null,
 };
 
 function addVisibleFile(files: string[], path: string): string[] {
@@ -27,17 +29,49 @@ export function applyProgressToLiveState(
   event: GenerationProgressEvent
 ): GenerationLiveState {
   switch (event.type) {
+    case "node_started": {
+      const exists = state.nodeSteps.some((s) => s.node === event.node);
+      const nodeSteps = exists
+        ? state.nodeSteps.map((s) =>
+            s.node === event.node ? { ...s, status: "running" as const } : s
+          )
+        : [
+            ...state.nodeSteps,
+            {
+              node: event.node,
+              label: event.label,
+              phase: event.phase,
+              status: "running" as const,
+            },
+          ];
+      return { ...state, nodeSteps };
+    }
+    case "node_completed":
+      return {
+        ...state,
+        nodeSteps: state.nodeSteps.map((s) =>
+          s.node === event.node ? { ...s, status: "done" as const } : s
+        ),
+      };
     case "files_planned":
       return {
         ...state,
         plannedFiles: event.files,
-        visibleFiles: [],
-        fileChangeTypes: {},
-        fileContents: {},
-        filePreviousContents: {},
-        completedFiles: [],
-        writingFilePath: null,
-        lastFileWritten: null,
+        visibleFiles: state.completedFiles.length > 0 ? state.visibleFiles : [],
+        fileChangeTypes:
+          state.completedFiles.length > 0 ? state.fileChangeTypes : {},
+        fileContents: state.completedFiles.length > 0 ? state.fileContents : {},
+        filePreviousContents:
+          state.completedFiles.length > 0 ? state.filePreviousContents : {},
+        completedFiles: state.completedFiles.length > 0 ? state.completedFiles : [],
+        writingFilePath: state.completedFiles.length > 0 ? state.writingFilePath : null,
+        lastFileWritten: state.completedFiles.length > 0 ? state.lastFileWritten : null,
+      };
+    case "brain_decision":
+      return {
+        ...state,
+        plannedFiles: event.files,
+        plannedAssets: event.assets,
       };
     case "file_planned":
       return {
@@ -104,6 +138,8 @@ export function applyProgressToLiveState(
       };
     case "asset_failed":
       return { ...state, generatingAssetUri: null };
+    case "change_manifest":
+      return { ...state, changeManifest: event.manifest };
     case "code_complete":
     case "complete":
       return { ...state, writingFilePath: null, generatingAssetUri: null };

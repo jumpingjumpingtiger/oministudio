@@ -1,9 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle2, Loader2, Paperclip, Send } from "lucide-react";
+import { createPortal } from "react-dom";
+import { CheckCircle2, Copy, Loader2, Paperclip, RotateCcw, Send, Square, X } from "lucide-react";
 import type { GenerationLiveState, GenerationProgressEvent } from "@/lib/generation-progress";
+import type { BrainSessionDisplay, EnhancedPromptDisplay } from "@/lib/brain-session-display";
+import {
+  parseAssistantMessageFiles,
+  type ChangeManifest,
+} from "@/lib/change-manifest";
 import { getProgressMessages } from "@/lib/utils/progress-messages";
+import { getChangeManifestLabels } from "@/lib/prompt-language";
 
 interface ChatMessage {
   id: string;
@@ -27,19 +34,262 @@ interface ChatPanelProps {
   isGenerating: boolean;
   generationProgress: GenerationProgressEvent[];
   generationLive?: GenerationLiveState;
+  brainSession?: BrainSessionDisplay | null;
   onSend: (prompt: string, files: File[]) => void;
+  onCancel?: () => void;
+  onRetry?: () => void;
+  generationError?: string | null;
   isFirstVisit?: boolean;
 }
 
 const MIN_INPUT_HEIGHT = 40;
 const MAX_INPUT_HEIGHT = 160;
 
-function ProgressLine({ event }: { event: GenerationProgressEvent }) {
+function oneLineSummary(text: string, max = 80): string {
+  const line = text.trim().replace(/\s+/g, " ");
+  if (line.length <= max) return line;
+  return `${line.slice(0, max)}…`;
+}
+
+function EnhancedPromptPopover({ prompt }: { prompt: EnhancedPromptDisplay }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [anchorPoint, setAnchorPoint] = useState({ x: 0, y: 0 });
+  const [layout, setLayout] = useState({ left: 0, top: 0, maxHeight: 320, maxWidth: 448 });
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+
+  const hide = useCallback(() => {
+    setOpen(false);
+    setDragOffset({ x: 0, y: 0 });
+  }, []);
+
+  const showAtPointer = useCallback((clientX: number, clientY: number) => {
+    setAnchorPoint({ x: clientX, y: clientY });
+    setDragOffset({ x: 0, y: 0 });
+    setOpen(true);
+  }, []);
+
+  const copyPrompt = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(prompt.enhanced);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }, [prompt.enhanced]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const margin = 8;
+    const popoverWidth = Math.min(448, window.innerWidth - margin * 2);
+    const availableAbove = anchorPoint.y - margin;
+    const maxHeight = Math.max(120, Math.min(384, availableAbove));
+
+    let left = anchorPoint.x + dragOffset.x;
+    const top = anchorPoint.y + dragOffset.y;
+
+    if (left + popoverWidth > window.innerWidth - margin) {
+      left = Math.max(margin, window.innerWidth - margin - popoverWidth);
+    }
+    if (left < margin) left = margin;
+
+    setLayout({ left, top, maxHeight, maxWidth: popoverWidth });
+  }, [open, anchorPoint, dragOffset]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onScroll = () => hide();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, [open, hide]);
+
+  const startDrag = (event: React.MouseEvent) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const originX = dragOffset.x;
+    const originY = dragOffset.y;
+    const startX = event.clientX;
+    const startY = event.clientY;
+
+    const onMove = (moveEvent: MouseEvent) => {
+      setDragOffset({
+        x: originX + (moveEvent.clientX - startX),
+        y: originY + (moveEvent.clientY - startY),
+      });
+    };
+
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        className="text-[var(--accent)] underline decoration-dotted cursor-pointer text-left"
+        onMouseEnter={(event) => showAtPointer(event.clientX, event.clientY)}
+        onClick={(event) => {
+          event.preventDefault();
+          showAtPointer(event.clientX, event.clientY);
+        }}
+      >
+        {prompt.summary}
+      </button>
+      {open &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="fixed z-[200] rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] shadow-xl flex flex-col"
+            style={{
+              left: layout.left,
+              top: layout.top,
+              width: layout.maxWidth,
+              maxHeight: layout.maxHeight,
+              transform: "translateY(-100%)",
+            }}
+            onMouseLeave={hide}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div
+              className="flex items-center justify-between gap-2 border-b border-[var(--panel-border)] px-2 py-1.5 shrink-0 cursor-move select-none"
+              onMouseDown={startDrag}
+            >
+              <span className="text-[10px] font-medium text-[var(--muted)]">Enhanced prompt</span>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => void copyPrompt()}
+                  className="btn-ghost text-[10px] flex items-center gap-1 px-1.5 py-0.5 cursor-pointer"
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <Copy size={10} />
+                  {copied ? "Copied" : "Copy"}
+                </button>
+                <button
+                  type="button"
+                  onClick={hide}
+                  className="btn-ghost p-0.5 text-[var(--muted)] hover:text-[var(--foreground)] cursor-pointer"
+                  aria-label="Close"
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            </div>
+            <pre
+              tabIndex={0}
+              className="p-2 text-[11px] leading-relaxed whitespace-pre-wrap break-words overflow-y-auto flex-1 min-h-0 overscroll-contain text-[var(--foreground)] focus:outline-none"
+            >
+              {prompt.enhanced}
+            </pre>
+          </div>,
+          document.body
+        )}
+    </>
+  );
+}
+
+function LlmThinkingPanel({
+  text,
+  phase,
+}: {
+  text: string;
+  phase: "enhance" | "brain" | null;
+}) {
+  const scrollRef = useRef<HTMLPreElement>(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [text.length]);
+
+  if (!text) return null;
+
+  const label =
+    phase === "enhance" ? "Refining prompt…" : "Brain LLM thinking…";
+
+  return (
+    <div className="mb-2 border-b border-black/10 pb-2">
+      <p className="text-[10px] font-medium text-[var(--accent)] mb-1 flex items-center gap-1">
+        <Loader2 size={10} className="animate-spin shrink-0" />
+        {label}
+      </p>
+      <pre
+        ref={scrollRef}
+        className="max-h-32 overflow-y-auto whitespace-pre-wrap break-all text-[10px] font-mono text-[var(--muted)]"
+      >
+        {text}
+      </pre>
+    </div>
+  );
+}
+
+function ProgressLine({
+  event,
+  enhancedPrompt,
+}: {
+  event: GenerationProgressEvent;
+  enhancedPrompt?: EnhancedPromptDisplay | null;
+}) {
+  const labels = getChangeManifestLabels();
+
   switch (event.type) {
     case "status":
       return <p className="text-xs text-[var(--muted)]">{event.message}</p>;
     case "thinking":
       return <p className="text-xs text-[var(--accent)]">{event.message}</p>;
+    case "brain_calling":
+      return (
+        <p className="text-xs text-[var(--accent)] flex items-center gap-1">
+          <Loader2 size={10} className="animate-spin shrink-0" />
+          Brain LLM generating game plan and code…
+        </p>
+      );
+    case "prompt_enhance_start":
+      return (
+        <p className="text-xs text-[var(--accent)] flex items-center gap-1">
+          <Loader2 size={10} className="animate-spin shrink-0" />
+          Refining user prompt with project context…
+        </p>
+      );
+    case "prompt_enhanced": {
+      const unchanged = event.enhanced.trim() === event.original.trim();
+      const prompt: EnhancedPromptDisplay =
+        enhancedPrompt ?? {
+          original: event.original,
+          enhanced: event.enhanced,
+          summary: oneLineSummary(event.enhanced || event.original),
+        };
+      return (
+        <p className="text-xs text-[var(--muted)]">
+          {labels.promptEnhanced}
+          {unchanged ? (
+            labels.promptUnchanged
+          ) : (
+            <>
+              {": "}
+              <EnhancedPromptPopover prompt={prompt} />
+            </>
+          )}
+        </p>
+      );
+    }
+    case "brain_decision":
+      return (
+        <p className="text-xs text-[var(--accent)]">
+          Plan ready — {event.files.length} file(s), {event.assets.length} asset(s)
+        </p>
+      );
     case "version_created":
       return (
         <p className="text-xs text-[var(--accent)]">
@@ -127,19 +377,200 @@ function ProgressLine({ event }: { event: GenerationProgressEvent }) {
       );
     case "error":
       return <p className="text-xs text-[var(--danger)]">{event.message}</p>;
+    case "cancelled":
+      return <p className="text-xs text-[var(--muted)]">Generation cancelled.</p>;
     default:
       return null;
   }
 }
 
+/** Renders one Brain RAG feed line: section headers, recalled-slice rows, and detail lines. */
+function BrainContextLine({ line }: { line: string }) {
+  if (line.startsWith("[")) {
+    const close = line.indexOf("]");
+    const tag = close > 0 ? line.slice(1, close) : "";
+    const rest = close > 0 ? line.slice(close + 1) : line;
+    return (
+      <p className="leading-relaxed mt-1 first:mt-0">
+        <span className="text-[var(--accent)] font-semibold">{tag}</span>
+        <span className="text-[var(--muted)]">{rest}</span>
+      </p>
+    );
+  }
+  // Recalled-slice rows and assembled-fragment rows are indented bullets.
+  if (line.startsWith("  •") || line.startsWith("  ▸")) {
+    return (
+      <p className="leading-relaxed pl-3 text-[var(--foreground)]/70 truncate" title={line.trim()}>
+        {line.trim()}
+      </p>
+    );
+  }
+  return (
+    <p className="leading-relaxed pl-3 text-[var(--muted)] truncate" title={line.trim()}>
+      {line.trim()}
+    </p>
+  );
+}
+
+function BrainContextFeed({ session }: { session: BrainSessionDisplay }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [session.contextLines.length, session.outputTokens]);
+
+  if (
+    session.inputTokens == null &&
+    session.outputTokens == null &&
+    session.contextLines.length === 0
+  ) {
+    return null;
+  }
+
+  const callingLabel =
+    session.status === "streaming"
+      ? "Brain LLM streaming…"
+      : session.status === "calling"
+        ? "Calling Brain LLM…"
+        : null;
+
+  return (
+    <div className="mb-2 rounded-md border border-[var(--accent)]/20 bg-[var(--accent)]/5 p-2 text-[10px] font-mono">
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 mb-1.5 text-[var(--accent)]">
+        {session.inputTokens != null && (
+          <span>Input ~{session.inputTokens.toLocaleString()} tokens</span>
+        )}
+        {session.outputTokens != null && (
+          <span>Output ~{session.outputTokens.toLocaleString()} tokens</span>
+        )}
+        {callingLabel && session.outputTokens == null && (
+          <span className="flex items-center gap-1">
+            <Loader2 size={10} className="animate-spin shrink-0" />
+            {callingLabel}
+          </span>
+        )}
+      </div>
+      {session.contextLines.length > 0 && (
+        <div
+          ref={scrollRef}
+          className="max-h-56 overflow-y-auto space-y-0.5 text-[var(--muted)]"
+        >
+          {session.contextLines.map((line, i) => (
+            <BrainContextLine key={i} line={line} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NodePipeline({ steps }: { steps: GenerationLiveState["nodeSteps"] }) {
+  if (!steps.length) return null;
+  return (
+    <div className="mb-2 border-b border-black/10 pb-2">
+      <p className="font-medium text-[var(--muted)] mb-1 text-xs">Graph pipeline</p>
+      <ul className="space-y-0.5 text-[10px]">
+        {steps.map((step) => (
+          <li key={step.node} className="flex items-center gap-1 truncate">
+            {step.status === "done" ? (
+              <CheckCircle2 size={10} className="text-green-500 shrink-0" />
+            ) : (
+              <Loader2 size={10} className="animate-spin text-[var(--accent)] shrink-0" />
+            )}
+            <span className="truncate">{step.label}</span>
+            <span className="text-[var(--muted)] opacity-60 shrink-0">({step.phase})</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ChangeManifestPanel({ manifest }: { manifest: ChangeManifest }) {
+  const labels = getChangeManifestLabels();
+  const hasFiles =
+    manifest.files.added.length +
+      manifest.files.modified.length +
+      manifest.files.deleted.length >
+    0;
+  const hasAssets =
+    manifest.assets.added.length +
+      manifest.assets.modified.length +
+      manifest.assets.deleted.length +
+      manifest.assets.reused.length >
+    0;
+
+  if (!hasFiles && !hasAssets) return null;
+
+  const fileRow = (label: string, paths: string[], className: string) =>
+    paths.length > 0 && (
+      <div className="mb-1">
+        <p className={`text-[10px] font-medium ${className}`}>{label}</p>
+        <ul className="font-mono text-[10px] space-y-0.5 pl-1">
+          {paths.map((p) => (
+            <li key={p} className="truncate" title={p}>
+              {p}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+
+  const assetRow = (
+    label: string,
+    items: { name: string; uri: string }[],
+    className: string
+  ) =>
+    items.length > 0 && (
+      <div className="mb-1">
+        <p className={`text-[10px] font-medium ${className}`}>{label}</p>
+        <ul className="text-[10px] space-y-0.5 pl-1">
+          {items.map((a) => (
+            <li key={a.uri} className="truncate" title={a.uri}>
+              {a.name}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+
+  return (
+    <div className="mt-2 pt-2 border-t border-black/10 space-y-2 text-xs">
+      {hasFiles && (
+        <div>
+          <p className="font-medium text-[var(--muted)] mb-1">{labels.fileChanges}</p>
+          {fileRow(labels.added, manifest.files.added, "text-green-600")}
+          {fileRow(labels.modified, manifest.files.modified, "text-amber-600")}
+          {fileRow(labels.deleted, manifest.files.deleted, "text-red-600")}
+        </div>
+      )}
+      {hasAssets && (
+        <div>
+          <p className="font-medium text-[var(--muted)] mb-1">{labels.assetChanges}</p>
+          {assetRow(labels.added, manifest.assets.added, "text-green-600")}
+          {assetRow(labels.modified, manifest.assets.modified, "text-amber-600")}
+          {assetRow(labels.deleted, manifest.assets.deleted, "text-red-600")}
+          {assetRow(labels.reused, manifest.assets.reused, "text-blue-600")}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GenerationLiveSummary({ live }: { live: GenerationLiveState }) {
   const hasFiles = live.plannedFiles.length > 0;
   const hasAssets = live.plannedAssets.length > 0;
-  if (!hasFiles && !hasAssets) return null;
+  const hasNodes = live.nodeSteps.length > 0;
+  const hasManifest = live.changeManifest != null;
+  if (!hasFiles && !hasAssets && !hasNodes && !hasManifest) return null;
 
   return (
     <div className="mb-2 space-y-2 text-xs border-b border-black/10 pb-2">
-      {hasFiles && (
+      {hasNodes && <NodePipeline steps={live.nodeSteps} />}
+      {hasManifest && live.changeManifest && (
+        <ChangeManifestPanel manifest={live.changeManifest} />
+      )}
+      {!hasManifest && hasFiles && (
         <div>
           <p className="font-medium text-[var(--muted)] mb-1">Code files</p>
           <ul className="space-y-0.5 font-mono text-[10px]">
@@ -162,7 +593,7 @@ function GenerationLiveSummary({ live }: { live: GenerationLiveState }) {
           </ul>
         </div>
       )}
-      {hasAssets && (
+      {!hasManifest && hasAssets && (
         <div>
           <p className="font-medium text-[var(--muted)] mb-1">Assets</p>
           <ul className="space-y-0.5 text-[10px]">
@@ -209,7 +640,11 @@ export function ChatPanel({
   isGenerating,
   generationProgress,
   generationLive,
+  brainSession,
   onSend,
+  onCancel,
+  onRetry,
+  generationError,
   isFirstVisit,
 }: ChatPanelProps) {
   const progressLabels = getProgressMessages();
@@ -232,7 +667,7 @@ export function ChatPanel({
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isGenerating, generationProgress, generationLive, pendingUserMessage]);
+  }, [messages, isGenerating, generationProgress, generationLive, pendingUserMessage, brainSession]);
 
   useEffect(() => {
     adjustTextareaHeight();
@@ -254,10 +689,14 @@ export function ChatPanel({
 
   const parseFiles = (filesJson: string) => {
     try {
-      return JSON.parse(filesJson) as { name: string; type: string; size: number }[];
+      const parsed = JSON.parse(filesJson);
+      if (Array.isArray(parsed)) {
+        return parsed as { name: string; type: string; size: number }[];
+      }
     } catch {
-      return [];
+      // ignore
     }
+    return [];
   };
 
   return (
@@ -283,7 +722,8 @@ export function ChatPanel({
 
         {messages.map((msg) => {
           const isUser = msg.role === "user";
-          const files = parseFiles(msg.files);
+          const attachmentFiles = parseFiles(msg.files);
+          const assistantPayload = !isUser ? parseAssistantMessageFiles(msg.files) : {};
           const versionNum = getVersionNumber(versions, msg.version?.id);
 
           return (
@@ -303,9 +743,9 @@ export function ChatPanel({
                   }`}
                 >
                   <p className="whitespace-pre-wrap">{msg.content}</p>
-                  {files.length > 0 && (
+                  {attachmentFiles.length > 0 && (
                     <div className="mt-1.5 flex flex-wrap gap-1">
-                      {files.map((f, i) => (
+                      {attachmentFiles.map((f, i) => (
                         <span
                           key={i}
                           className="text-[10px] px-1.5 py-0.5 rounded bg-black/10"
@@ -314,6 +754,9 @@ export function ChatPanel({
                         </span>
                       ))}
                     </div>
+                  )}
+                  {assistantPayload.changeManifest && (
+                    <ChangeManifestPanel manifest={assistantPayload.changeManifest} />
                   )}
                   {!isUser && versionNum && (
                     <div className="mt-2 pt-1.5 border-t border-black/10">
@@ -365,6 +808,28 @@ export function ChatPanel({
             </div>
           )}
 
+        {generationError && !isGenerating && (
+          <div className="px-1 mb-2 rounded-md border border-red-500/30 bg-red-500/5 p-2 text-xs text-red-600 flex items-center justify-between gap-2">
+            <span>{generationError}</span>
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="btn-ghost text-xs flex items-center gap-1 shrink-0"
+              >
+                <RotateCcw size={12} />
+                Retry
+              </button>
+            )}
+          </div>
+        )}
+
+        {isGenerating && brainSession && (
+          <div className="px-1">
+            <BrainContextFeed session={brainSession} />
+          </div>
+        )}
+
         {isGenerating && (
           <div className="flex gap-2">
             <div className="w-7 h-7 rounded-full bg-[var(--accent)] flex items-center justify-center shrink-0 text-[10px] font-bold text-white">
@@ -376,9 +841,19 @@ export function ChatPanel({
                 <span className="text-sm font-medium">{progressLabels.generatingGame}</span>
               </div>
               {generationLive && <GenerationLiveSummary live={generationLive} />}
+              {brainSession?.thinkingText && (
+                <LlmThinkingPanel
+                  text={brainSession.thinkingText}
+                  phase={brainSession.thinkingPhase}
+                />
+              )}
               <div className="space-y-1 max-h-32 overflow-y-auto">
                 {generationProgress.map((event, i) => (
-                  <ProgressLine key={i} event={event} />
+                  <ProgressLine
+                    key={i}
+                    event={event}
+                    enhancedPrompt={brainSession?.enhancedPrompt}
+                  />
                 ))}
                 {generationProgress.length === 0 && (
                   <p className="text-xs text-[var(--muted)]">{progressLabels.starting}</p>
@@ -414,6 +889,16 @@ export function ChatPanel({
         )}
 
         <div className="flex items-end gap-2">
+          {isGenerating && onCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="btn-ghost p-2 shrink-0 mb-0.5 text-[var(--danger)]"
+              title="Stop generation"
+            >
+              <Square size={16} />
+            </button>
+          )}
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={isGenerating}

@@ -55,7 +55,7 @@ async function reuseExistingAsset(
     uri,
     type: asset.type,
     url: existing.url,
-    prompt: asset.prompt,
+    prompt: (asset.prompt || "").trim() || existing.prompt || "",
     format,
     regenerate: false,
     reused: true,
@@ -144,6 +144,8 @@ export async function dispatchAssets(
     const uri = asset.uri || `asset://${asset.type}/${asset.name}`;
     const shouldRegenerate = asset.regenerate !== false;
 
+    // regenerate:false → reuse latest library entry for this URI (Brain decided unchanged).
+    // regenerate:true  → new prisma.asset + new file; older versions keep their uri.csv URLs.
     if (!shouldRegenerate) {
       const reused = await reuseExistingAsset(projectId, asset);
       if (reused) {

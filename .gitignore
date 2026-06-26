@@ -47,3 +47,5 @@ agent*.md
 
 # OS
 Thumbs.db
+
+.cursorignore

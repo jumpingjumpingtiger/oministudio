@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { VersionPanel } from "@/components/VersionPanel";
 import { ProjectPanel } from "@/components/ProjectPanel";
@@ -10,6 +10,11 @@ import { ModelDebugPanel } from "@/components/ModelDebugPanel";
 import { ResizeHandle } from "@/components/ResizeHandle";
 import type { GenerationLiveState, GenerationProgressEvent } from "@/lib/generation-progress";
 import { applyProgressToLiveState, EMPTY_LIVE_STATE } from "@/lib/generation-live";
+import {
+  applyBrainProgressEvent,
+  EMPTY_BRAIN_SESSION,
+  type BrainSessionDisplay,
+} from "@/lib/brain-session-display";
 import type { RightPanelTab } from "@/lib/types";
 import { condensePromptToProjectName } from "@/lib/utils/project-name";
 import {
@@ -55,7 +60,8 @@ const CHAT_DEFAULT = 256;
 
 async function consumeSseStream(
   response: Response,
-  onEvent: (event: GenerationProgressEvent) => void
+  onEvent: (event: GenerationProgressEvent) => void,
+  signal?: AbortSignal
 ) {
   if (!response.body) throw new Error("No response body");
 
@@ -63,23 +69,40 @@ async function consumeSseStream(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        await reader.cancel();
+        throw new DOMException("Generation cancelled", "AbortError");
+      }
 
-    buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split("\n\n");
-    buffer = chunks.pop() || "";
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    for (const chunk of chunks) {
-      if (!chunk.startsWith("data: ")) continue;
-      try {
-        onEvent(JSON.parse(chunk.slice(6)) as GenerationProgressEvent);
-      } catch {
-        // skip malformed events
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop() || "";
+
+      for (const chunk of chunks) {
+        if (!chunk.startsWith("data: ")) continue;
+        try {
+          onEvent(JSON.parse(chunk.slice(6)) as GenerationProgressEvent);
+        } catch {
+          // skip malformed events
+        }
       }
     }
+  } finally {
+    reader.releaseLock();
   }
+}
+
+interface RetryState {
+  prompt: string;
+  projectId: string;
+  phase: "code" | "assets";
+  codeVersionId?: string;
+  filesMeta: { name: string; type: string; size: number }[];
 }
 
 export default function HomePage() {
@@ -100,9 +123,13 @@ export default function HomePage() {
   const [generationProgress, setGenerationProgress] = useState<GenerationProgressEvent[]>([]);
   const [generatingVersionId, setGeneratingVersionId] = useState<string | null>(null);
   const [generationLive, setGenerationLive] = useState<GenerationLiveState>(EMPTY_LIVE_STATE);
+  const [brainSession, setBrainSession] = useState<BrainSessionDisplay | null>(null);
   const [liveRefreshKey, setLiveRefreshKey] = useState(0);
   const [pendingUserMessage, setPendingUserMessage] = useState<ChatMessage | null>(null);
   const [generationPhase, setGenerationPhase] = useState<"code" | "assets" | null>(null);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [retryState, setRetryState] = useState<RetryState | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? null;
 
@@ -194,13 +221,81 @@ export default function HomePage() {
     setRefreshKey((k) => k + 1);
   };
 
+  const handleDeleteVersion = async (versionId: string) => {
+    if (!selectedProjectId) return;
+    const version = versions.find((v) => v.id === versionId);
+    const label =
+      version?.versionNumber != null ? `v${version.versionNumber}` : versionId.slice(0, 8);
+    if (!confirm(`Delete version ${label}? Code and assets for this version will be removed.`)) {
+      return;
+    }
+
+    const res = await fetch(
+      `/api/projects/${selectedProjectId}/versions?versionId=${versionId}`,
+      { method: "DELETE" }
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || "Failed to delete version");
+      return;
+    }
+
+    await fetchVersions(selectedProjectId);
+    await fetchMessages(selectedProjectId);
+    setRefreshKey((k) => k + 1);
+  };
+
   const handleProgressEvent = useCallback((event: GenerationProgressEvent) => {
+    const isBrainSessionEvent =
+      event.type === "brain_context_start" ||
+      event.type === "brain_context_line" ||
+      event.type === "brain_calling" ||
+      event.type === "brain_stream_chunk" ||
+      event.type === "brain_token_usage" ||
+      event.type === "prompt_enhance_start" ||
+      event.type === "prompt_enhanced" ||
+      event.type === "llm_thinking_chunk" ||
+      event.type === "llm_code_output_start";
+
+    if (isBrainSessionEvent) {
+      const applyBrain = () =>
+        setBrainSession((prev) =>
+          applyBrainProgressEvent(prev ?? EMPTY_BRAIN_SESSION, event)
+        );
+
+      if (
+        event.type === "brain_stream_chunk" ||
+        event.type === "llm_thinking_chunk" ||
+        event.type === "llm_code_output_start"
+      ) {
+        flushSync(applyBrain);
+      } else {
+        applyBrain();
+      }
+
+      if (event.type === "prompt_enhance_start" || event.type === "prompt_enhanced") {
+        flushSync(() => {
+          setGenerationProgress((prev) => [...prev, event]);
+        });
+      }
+      return;
+    }
+
     const applyLiveUpdate = (liveEvent: GenerationProgressEvent) => {
       setGenerationLive((prev) => applyProgressToLiveState(prev, liveEvent));
     };
 
-    if (event.type === "file_content_progress") {
-      applyLiveUpdate(event);
+    if (
+      event.type === "file_content_progress" ||
+      event.type === "node_started" ||
+      event.type === "node_completed" ||
+      event.type === "change_manifest"
+    ) {
+      if (event.type === "file_content_progress") {
+        flushSync(() => applyLiveUpdate(event));
+      } else {
+        applyLiveUpdate(event);
+      }
       return;
     }
 
@@ -223,6 +318,132 @@ export default function HomePage() {
     }
   }, []);
 
+  const runGeneration = useCallback(
+    async (params: {
+      prompt: string;
+      projectId: string;
+      filesMeta: { name: string; type: string; size: number }[];
+      startPhase?: "code" | "assets";
+      codeVersionId?: string;
+    }) => {
+      const { prompt, projectId, filesMeta, startPhase = "code", codeVersionId } = params;
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      setIsGenerating(true);
+      setGenerationError(null);
+      setRetryState(null);
+      setGenerationPhase(startPhase);
+      setGenerationProgress([]);
+      setGenerationLive(EMPTY_LIVE_STATE);
+      setBrainSession(null);
+      if (startPhase === "code") {
+        setGeneratingVersionId(null);
+        setPendingUserMessage({
+          id: `pending-${Date.now()}`,
+          role: "user",
+          content: prompt.trim(),
+          files: JSON.stringify(filesMeta),
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      let resolvedCodeVersionId = codeVersionId ?? null;
+
+      try {
+        if (startPhase === "code") {
+          const codeRes = await fetch(`/api/projects/${projectId}/generate/code`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt, files: filesMeta }),
+            signal: controller.signal,
+          });
+
+          if (!codeRes.ok) {
+            throw new Error("Code generation request failed");
+          }
+
+          await consumeSseStream(
+            codeRes,
+            (event) => {
+              handleProgressEvent(event);
+              if (event.type === "code_complete") {
+                resolvedCodeVersionId = event.versionId;
+              }
+              if (event.type === "error") {
+                throw new Error(event.message);
+              }
+            },
+            controller.signal
+          );
+
+          if (!resolvedCodeVersionId) {
+            throw new Error("Code generation did not return a version");
+          }
+        }
+
+        setGenerationPhase("assets");
+        setLiveRefreshKey((k) => k + 1);
+
+        const assetsRes = await fetch(`/api/projects/${projectId}/generate/assets`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ versionId: resolvedCodeVersionId }),
+          signal: controller.signal,
+        });
+
+        if (!assetsRes.ok) {
+          throw new Error("Asset generation request failed");
+        }
+
+        await consumeSseStream(
+          assetsRes,
+          (event) => {
+            handleProgressEvent(event);
+            if (event.type === "error") {
+              throw new Error(event.message);
+            }
+          },
+          controller.signal
+        );
+
+        setRefreshKey((k) => k + 1);
+        await fetchProjects();
+        await fetchVersions(projectId);
+        await fetchMessages(projectId);
+        setPendingUserMessage(null);
+      } catch (error) {
+        const cancelled =
+          controller.signal.aborted ||
+          (error instanceof DOMException && error.name === "AbortError");
+
+        if (cancelled) {
+          setGenerationError("Generation cancelled.");
+        } else {
+          const message =
+            error instanceof Error ? error.message : "Generation failed";
+          setGenerationError(message);
+          setRetryState({
+            prompt,
+            projectId,
+            phase: resolvedCodeVersionId ? "assets" : "code",
+            codeVersionId: resolvedCodeVersionId ?? undefined,
+            filesMeta,
+          });
+        }
+      } finally {
+        abortRef.current = null;
+        setIsGenerating(false);
+        setGenerationPhase(null);
+        setGeneratingVersionId(null);
+        setGenerationProgress([]);
+        setGenerationLive(EMPTY_LIVE_STATE);
+        setBrainSession(null);
+      }
+    },
+    [handleProgressEvent, fetchProjects, fetchVersions, fetchMessages]
+  );
+
   const handleSendPrompt = async (prompt: string, files: File[]) => {
     if (!prompt.trim()) return;
 
@@ -232,80 +453,29 @@ export default function HomePage() {
       size: f.size,
     }));
 
-    setIsGenerating(true);
-    setGenerationPhase("code");
-    setGenerationProgress([]);
-    setGenerationLive(EMPTY_LIVE_STATE);
-    setGeneratingVersionId(null);
-    setPendingUserMessage({
-      id: `pending-${Date.now()}`,
-      role: "user",
-      content: prompt.trim(),
-      files: JSON.stringify(fileMeta),
-      createdAt: new Date().toISOString(),
-    });
-
-    try {
-      let projectId = selectedProjectId;
-
-      if (!projectId) {
-        const name = condensePromptToProjectName(prompt);
-        projectId = await handleCreateProject(name, "");
-      }
-
-      const codeRes = await fetch(`/api/projects/${projectId}/generate/code`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, files: fileMeta }),
-      });
-
-      if (!codeRes.ok) {
-        throw new Error("Code generation request failed");
-      }
-
-      let codeVersionId: string | null = null;
-
-      await consumeSseStream(codeRes, (event) => {
-        handleProgressEvent(event);
-        if (event.type === "code_complete") {
-          codeVersionId = event.versionId;
-        }
-      });
-
-      if (!codeVersionId) {
-        throw new Error("Code generation did not return a version");
-      }
-
-      setGenerationPhase("assets");
-      setLiveRefreshKey((k) => k + 1);
-
-      const assetsRes = await fetch(`/api/projects/${projectId}/generate/assets`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          versionId: codeVersionId,
-        }),
-      });
-
-      if (!assetsRes.ok) {
-        throw new Error("Asset generation request failed");
-      }
-
-      await consumeSseStream(assetsRes, handleProgressEvent);
-
-      setRefreshKey((k) => k + 1);
-      await fetchProjects();
-      await fetchVersions(projectId);
-      await fetchMessages(projectId);
-    } finally {
-      setIsGenerating(false);
-      setGenerationPhase(null);
-      setGeneratingVersionId(null);
-      setGenerationProgress([]);
-      setGenerationLive(EMPTY_LIVE_STATE);
-      setPendingUserMessage(null);
+    let projectId = selectedProjectId;
+    if (!projectId) {
+      const name = condensePromptToProjectName(prompt);
+      projectId = await handleCreateProject(name, "");
     }
+
+    await runGeneration({ prompt: prompt.trim(), projectId, filesMeta: fileMeta });
   };
+
+  const handleCancelGeneration = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  const handleRetryGeneration = useCallback(() => {
+    if (!retryState) return;
+    void runGeneration({
+      prompt: retryState.prompt,
+      projectId: retryState.projectId,
+      filesMeta: retryState.filesMeta,
+      startPhase: retryState.phase,
+      codeVersionId: retryState.codeVersionId,
+    });
+  }, [retryState, runGeneration]);
 
   const effectiveRefreshKey = refreshKey + liveRefreshKey;
   const activeVersionId = versions.find((v) => v.isActive)?.id ?? null;
@@ -371,6 +541,7 @@ export default function HomePage() {
             <VersionPanel
               versions={versions}
               onSwitch={handleSwitchVersion}
+              onDelete={handleDeleteVersion}
               onHide={() => setVersionPanelVisible(false)}
               className="flex-1 min-h-0"
             />
@@ -441,7 +612,11 @@ export default function HomePage() {
               isGenerating={isGenerating}
               generationProgress={generationProgress}
               generationLive={generationLive}
+              brainSession={brainSession}
               onSend={handleSendPrompt}
+              onCancel={handleCancelGeneration}
+              onRetry={handleRetryGeneration}
+              generationError={generationError}
               isFirstVisit={projectsLoaded && projects.length === 0 && !selectedProjectId}
             />
           </div>

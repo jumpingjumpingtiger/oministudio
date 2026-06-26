@@ -8,34 +8,68 @@ import {
 } from "@/lib/engine/llm-config";
 import { extractJsonFromText } from "@/lib/engine/llm-providers/json-utils";
 
+export interface BrainLlmStreamOptions {
+  onChunk?: (text: string) => void | Promise<void>;
+  signal?: AbortSignal;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException("Generation cancelled", "AbortError");
+  }
+}
+
 export async function callBrainLlm(
   systemPrompt: string,
-  userPrompt: string
+  userPrompt: string,
+  signal?: AbortSignal
+): Promise<string> {
+  return callBrainLlmStream(systemPrompt, userPrompt, { signal });
+}
+
+export async function callBrainLlmStream(
+  systemPrompt: string,
+  userPrompt: string,
+  options: BrainLlmStreamOptions = {}
 ): Promise<string> {
   const { brain } = getLlmConfig();
+  throwIfAborted(options.signal);
 
   switch (brain.provider) {
     case "openai":
-      return callOpenAiBrain(systemPrompt, userPrompt, brain.model);
+      return callOpenAiBrainStream(systemPrompt, userPrompt, brain.model, options);
     case "claude":
-      return callClaudeBrain(systemPrompt, userPrompt, brain.model);
+      return callClaudeBrainStream(systemPrompt, userPrompt, brain.model, options);
     case "google":
-      return callGoogleBrain(systemPrompt, userPrompt, brain.model);
+      return callGoogleBrainStream(systemPrompt, userPrompt, brain.model, options);
     case "doubao":
-      return callDoubaoBrain(systemPrompt, userPrompt, brain.model);
+      return callDoubaoBrainStream(systemPrompt, userPrompt, brain.model, options);
     default:
       throw new Error(`Unsupported brain LLM provider: ${brain.provider}`);
   }
 }
 
-async function callOpenAiBrain(
+async function emitChunk(
+  options: BrainLlmStreamOptions,
+  text: string,
+  full: { value: string }
+): Promise<void> {
+  if (!text) return;
+  full.value += text;
+  await options.onChunk?.(text);
+}
+
+async function callOpenAiBrainStream(
   systemPrompt: string,
   userPrompt: string,
-  model: string
+  model: string,
+  options: BrainLlmStreamOptions
 ): Promise<string> {
   const apiKey = requireBrainApiKey("openai");
   const client = new OpenAI({ apiKey });
-  const response = await client.chat.completions.create({
+  const full = { value: "" };
+
+  const stream = await client.chat.completions.create({
     model,
     messages: [
       { role: "system", content: systemPrompt },
@@ -44,39 +78,54 @@ async function callOpenAiBrain(
     response_format: { type: "json_object" },
     max_tokens: 16384,
     temperature: 0.7,
+    stream: true,
   });
 
-  const content = response.choices[0]?.message?.content;
-  if (!content) throw new Error("OpenAI brain LLM returned empty response");
-  return content;
+  for await (const chunk of stream) {
+    throwIfAborted(options.signal);
+    await emitChunk(options, chunk.choices[0]?.delta?.content || "", full);
+  }
+
+  if (!full.value) throw new Error("OpenAI brain LLM returned empty response");
+  return full.value;
 }
 
-async function callClaudeBrain(
+async function callClaudeBrainStream(
   systemPrompt: string,
   userPrompt: string,
-  model: string
+  model: string,
+  options: BrainLlmStreamOptions
 ): Promise<string> {
   const apiKey = requireBrainApiKey("claude");
   const client = new Anthropic({ apiKey });
-  const response = await client.messages.create({
+  const full = { value: "" };
+
+  const stream = client.messages.stream({
     model,
     max_tokens: 16384,
     system: systemPrompt,
     messages: [{ role: "user", content: userPrompt }],
   });
 
-  const textBlock = response.content.find((block) => block.type === "text");
-  if (!textBlock || textBlock.type !== "text") {
-    throw new Error("Claude brain LLM returned empty response");
+  for await (const event of stream) {
+    throwIfAborted(options.signal);
+    if (
+      event.type === "content_block_delta" &&
+      event.delta.type === "text_delta"
+    ) {
+      await emitChunk(options, event.delta.text, full);
+    }
   }
 
-  return extractJsonFromText(textBlock.text);
+  if (!full.value) throw new Error("Claude brain LLM returned empty response");
+  return extractJsonFromText(full.value);
 }
 
-async function callGoogleBrain(
+async function callGoogleBrainStream(
   systemPrompt: string,
   userPrompt: string,
-  model: string
+  model: string,
+  options: BrainLlmStreamOptions
 ): Promise<string> {
   const apiKey = requireBrainApiKey("google");
   const genAI = new GoogleGenerativeAI(apiKey);
@@ -89,24 +138,32 @@ async function callGoogleBrain(
     },
   });
 
-  const result = await gemini.generateContent(userPrompt);
-  const content = result.response.text();
-  if (!content) throw new Error("Google brain LLM returned empty response");
-  return extractJsonFromText(content);
+  const result = await gemini.generateContentStream(userPrompt);
+  const full = { value: "" };
+
+  for await (const chunk of result.stream) {
+    throwIfAborted(options.signal);
+    await emitChunk(options, chunk.text(), full);
+  }
+
+  if (!full.value) throw new Error("Google brain LLM returned empty response");
+  return extractJsonFromText(full.value);
 }
 
-async function callDoubaoBrain(
+async function callDoubaoBrainStream(
   systemPrompt: string,
   userPrompt: string,
-  model: string
+  model: string,
+  options: BrainLlmStreamOptions
 ): Promise<string> {
   const apiKey = requireBrainApiKey("doubao");
   const client = new OpenAI({
     apiKey,
     baseURL: getBrainDoubaoBaseUrl(),
   });
+  const full = { value: "" };
 
-  const response = await client.chat.completions.create({
+  const stream = await client.chat.completions.create({
     model,
     messages: [
       { role: "system", content: systemPrompt },
@@ -114,15 +171,14 @@ async function callDoubaoBrain(
     ],
     max_tokens: 16384,
     temperature: 0.7,
+    stream: true,
   });
 
-  const choice = response.choices[0];
-  const content = choice?.message?.content;
-  if (!content) throw new Error("Doubao brain LLM returned empty response");
-
-  if (choice?.finish_reason === "length") {
-    throw new Error("Doubao brain LLM response was truncated (max_tokens reached)");
+  for await (const chunk of stream) {
+    throwIfAborted(options.signal);
+    await emitChunk(options, chunk.choices[0]?.delta?.content || "", full);
   }
 
-  return extractJsonFromText(content);
+  if (!full.value) throw new Error("Doubao brain LLM returned empty response");
+  return extractJsonFromText(full.value);
 }

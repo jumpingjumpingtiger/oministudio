@@ -1,16 +1,26 @@
 import { isBrainLlmConfigured } from "@/lib/engine/llm-config";
-import { callBrainLlm } from "@/lib/engine/llm-providers/brain-provider";
+import { callBrainLlm, callBrainLlmStream } from "@/lib/engine/llm-providers/brain-provider";
 import { parseBrainResult } from "@/lib/engine/llm-providers/json-utils";
 import type { BrainLlmResult, GeneratedAsset, GeneratedFile } from "@/lib/types";
-import type { UriCsvRow } from "@/lib/storage";
 import {
-  formatExistingAssetsContext,
-  normalizeAssetRegenerateFlags,
-} from "@/lib/engine/asset-reuse";
+  buildBrainUserPrompt,
+  DEFAULT_BRAIN_CONTEXT_BUDGET,
+  type BrainContextPreview,
+  type BrainGenerationContext,
+  type BuiltBrainPrompt,
+} from "@/lib/engine/brain-context";
+import { normalizeAssetRegenerateFlags } from "@/lib/engine/asset-reuse";
 import { BRAIN_LANGUAGE_INSTRUCTION } from "@/lib/utils/progress-messages";
+import { getBrainLanguageInstruction } from "@/lib/prompt-language";
+import { estimateTokenCount } from "@/lib/token-estimate";
+import { loadPhaserGameSkill } from "@/lib/engine/phaser-game-skill";
+import { createBrainStreamSplitter } from "@/lib/brain-stream-phase";
+
+const PHASER_SKILL = loadPhaserGameSkill();
 
 const BRAIN_SYSTEM_PROMPT = `You are the master brain LLM for OminiStudio, a multi-modal game development platform.
 Your job is to generate Phaser 3 H5 game code based on user prompts.
+${PHASER_SKILL}
 
 Rules:
 1. Generate complete, runnable Phaser 3 game code as separate files.
@@ -26,26 +36,40 @@ Rules:
 11. Keep code concise to fit within output limits. Avoid overly long files.
 12. All code comments must be in English.
 
-Asset sizing (CRITICAL for visual quality):
-13. Every asset MUST include "width" and "height" in pixels matching its in-game display size.
-14. Image generation prompts MUST specify exact pixel dimensions, e.g. "64x64 pixels", "800x600 pixels".
-15. Match asset sizes to Phaser game config (typically 800x600 canvas). Backgrounds should match canvas size.
-16. Sprites: 32-128px. Tiles/platforms: match collision size. UI elements: appropriate readable size.
-17. In Phaser code, after loading each image use setDisplaySize(width, height) or setScale() so sprites fit the game layout.
-18. Use consistent art style across all asset prompts (e.g. all pixel art OR all cartoon — never mix styles).
-19. Player sprites should be sized relative to platforms and world — typically player height ≈ 1.5-2x tile height.
+Partial output on iteration (when project context + retrieved code slices are provided):
+13. Return ONLY files you changed or created — omit untouched files entirely.
+14. Apply minimal, focused edits; preserve unrelated code in files you do touch.
+15. Do NOT rewrite the entire project when a small change suffices.
 
-Asset reuse (IMPORTANT when modifying an existing game):
-20. Each asset MUST include "regenerate": true or false.
-21. Set "regenerate": false when the asset URI already exists and the image prompt is unchanged — the platform will reuse the existing image.
-22. Set "regenerate": true when the asset is new OR the prompt changed and a new image is needed.
-23. Keep the same URI for unchanged assets so code references stay stable.
+Asset sizing (CRITICAL for visual quality):
+16. Every asset MUST include "width" and "height" in pixels matching its in-game display size.
+17. Image generation prompts MUST specify exact pixel dimensions, e.g. "64x64 pixels", "800x600 pixels".
+18. Match asset sizes to Phaser game config (typically 800x600 canvas). Backgrounds should match canvas size.
+19. Sprites: 32-128px. Tiles/platforms: match collision size. UI elements: appropriate readable size.
+20. In Phaser code, after loading each image use setDisplaySize(width, height) or setScale() so sprites fit the game layout.
+21. Use consistent art style across all asset prompts (e.g. all pixel art OR all cartoon — never mix styles).
+22. Player sprites should be sized relative to platforms and world — typically player height ≈ 1.5-2x tile height.
+
+Asset delta (Brain LLM decides — platform merges with compact inventory to build uri.csv):
+23. When iterating, output ONLY assets you add or modify. Omit unchanged assets — the platform reuses them automatically.
+24. Each listed asset MUST include "regenerate": true (add or modify). Include a full generation "prompt" for every listed asset.
+25. To remove an asset, delete its asset:// reference from code; do not list it in assets.
+26. Keep stable URIs in code for the same logical asset; change URI only when adding a genuinely new asset slot.
 
 Asset format (CRITICAL — choose per asset, do NOT default everything to png):
-24. Each asset MUST include "format": "png", "jpeg", or "jpg".
-25. Use "png" for sprites, characters, icons, tiles, UI elements that need transparency.
-26. Use "jpeg" or "jpg" for full-screen backgrounds, skyboxes, photos, gradients, and any opaque scenery — JPEG avoids broken transparency on large backgrounds.
-27. The generation prompt MUST explicitly state the output format, e.g. "PNG with transparent background" or "JPEG photo, no transparency, 800x600 pixels".
+27. Each asset MUST include "format": "png", "jpeg", or "jpg".
+28. Use "png" for sprites, characters, icons, tiles, UI elements that need transparency.
+29. Use "jpeg" or "jpg" for full-screen backgrounds, skyboxes, photos, gradients, and any opaque scenery — JPEG avoids broken transparency on large backgrounds.
+30. The generation prompt MUST explicitly state the output format, e.g. "PNG with transparent background" or "JPEG photo, no transparency, 800x600 pixels".
+
+Greenfield / full rewrite:
+31. List EVERY asset referenced in code in the assets array with regenerate true and full prompts.
+32. On full rewrite, include ALL files in the files array.
+
+Iterative development (when compact asset inventory is provided):
+33. This is an iteration on an existing game — NOT a greenfield rewrite unless the user explicitly asks.
+34. Preserve working game mechanics, file structure, and asset URIs unless the request requires changes.
+35. Apply minimal, focused edits aligned with the latest user request and conversation summary.
 
 Required JSON format:
 {
@@ -74,43 +98,225 @@ const RETRY_SYSTEM_PROMPT = `${BRAIN_SYSTEM_PROMPT}
 IMPORTANT: Keep the game minimal — only index.html, main.js, and one short scene file (under 80 lines).
 Use the "content" field with properly escaped JSON strings. Ensure the JSON is complete and valid.`;
 
-export async function runBrainLlm(
+export interface BrainLlmRunMeta {
+  inputTokens: number;
+  outputTokens: number;
+  contextPreview: BrainContextPreview;
+}
+
+export interface BrainLlmHooks {
+  onPrepared?: (meta: {
+    inputTokens: number;
+    contextPreview: BrainContextPreview;
+  }) => void | Promise<void>;
+  onThinkingChunk?: (chunk: string) => void | Promise<void>;
+  onCodeChunk?: (chunk: string) => void | Promise<void>;
+  onCodeOutputStart?: () => void | Promise<void>;
+  onStreamReset?: () => void | Promise<void>;
+  /** @deprecated Prefer onThinkingChunk/onCodeChunk */
+  onStreamChunk?: (chunk: string) => void | Promise<void>;
+  signal?: AbortSignal;
+}
+
+export interface PreparedBrainPrompt {
+  built: BuiltBrainPrompt;
+  inputTokens: number;
+  configured: boolean;
+  languageInstruction: string;
+}
+
+/**
+ * RAG retrieval + prompt assembly step (graph node `retrieve_context`).
+ * Runs UPG + AST RAG, chat recall, and uri.csv injection via buildBrainUserPrompt,
+ * but does NOT call the LLM — so retrieval is an isolated, observable node.
+ */
+export async function prepareBrainPrompt(
   userPrompt: string,
-  existingFiles?: GeneratedFile[],
-  existingAssets?: UriCsvRow[]
-): Promise<BrainLlmResult> {
-  if (!isBrainLlmConfigured()) {
-    return generateMockResult(userPrompt);
+  context: BrainGenerationContext = {},
+  budget = DEFAULT_BRAIN_CONTEXT_BUDGET
+): Promise<PreparedBrainPrompt> {
+  const built = await buildBrainUserPrompt(userPrompt, context, budget);
+  const languageInstruction = getBrainLanguageInstruction();
+  const fullPrompt = built.userPrompt + languageInstruction;
+  const inputTokens = estimateTokenCount(BRAIN_SYSTEM_PROMPT + fullPrompt);
+  return { built, inputTokens, configured: isBrainLlmConfigured(), languageInstruction };
+}
+
+/**
+ * Brain LLM generation step (graph node `brain_generate`).
+ * Consumes an already-prepared prompt, calls the model (with one compact retry),
+ * parses JSON, and normalizes asset regenerate flags.
+ */
+export async function callBrainFromPrompt(params: {
+  userPrompt: string;
+  context: BrainGenerationContext;
+  prepared: PreparedBrainPrompt;
+  hooks?: Pick<
+    BrainLlmHooks,
+    "onThinkingChunk" | "onCodeChunk" | "onCodeOutputStart" | "onStreamReset" | "onStreamChunk" | "signal"
+  >;
+}): Promise<BrainLlmResult & { meta: BrainLlmRunMeta }> {
+  const { userPrompt, context, prepared, hooks } = params;
+  const existingAssets = context.existingAssets || [];
+  const { built, inputTokens, languageInstruction } = prepared;
+
+  if (!prepared.configured) {
+    const mock = generateMockResult(userPrompt);
+    const outputTokens = estimateTokenCount(JSON.stringify(mock));
+    return {
+      ...mock,
+      meta: { inputTokens, outputTokens, contextPreview: built.contextPreview },
+    };
   }
 
-  const contextMessage = existingFiles?.length
-    ? `\n\nExisting game files for reference:\n${existingFiles.map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n")}`
-    : "";
+  const { selectionPlan, contextPreview } = built;
+  if (selectionPlan) {
+    console.info(
+      `[brain-context] intent=${selectionPlan.intent} files=${selectionPlan.selectedFileCount}/${selectionPlan.totalFileCount} chat=${selectionPlan.selectedChatCount}/${selectionPlan.totalChatCount} summarized=${selectionPlan.chatSummarizedCount} assets=${selectionPlan.selectedAssetCount}/${selectionPlan.totalAssetCount} (${selectionPlan.assetDetailLevel})`
+    );
+  }
 
-  const assetsContext = formatExistingAssetsContext(existingAssets || []);
+  const fullPrompt = built.userPrompt + languageInstruction;
+  const streamSplitter = createBrainStreamSplitter();
+  let codeOutputStarted = false;
 
-  const fullPrompt =
-    userPrompt + BRAIN_LANGUAGE_INSTRUCTION + contextMessage + assetsContext;
+  const streamOpts = {
+    onChunk: async (chunk: string) => {
+      if (hooks?.onStreamChunk && !hooks.onThinkingChunk && !hooks.onCodeChunk) {
+        await hooks.onStreamChunk(chunk);
+        return;
+      }
+
+      const { thinkingChunks, codeChunks, codeStarted } = streamSplitter.push(chunk);
+      for (const thinkingChunk of thinkingChunks) {
+        await hooks?.onThinkingChunk?.(thinkingChunk);
+      }
+      if (codeStarted && !codeOutputStarted) {
+        codeOutputStarted = true;
+        await hooks?.onCodeOutputStart?.();
+      }
+      for (const codeChunk of codeChunks) {
+        await hooks?.onCodeChunk?.(codeChunk);
+      }
+    },
+    signal: hooks?.signal,
+  };
 
   try {
-    const content = await callBrainLlm(BRAIN_SYSTEM_PROMPT, fullPrompt);
+    const content = await callBrainLlmStream(
+      BRAIN_SYSTEM_PROMPT,
+      fullPrompt,
+      streamOpts
+    );
+    const outputTokens = estimateTokenCount(content);
     const result = parseBrainResult(content);
     return {
       ...result,
-      assets: normalizeAssetRegenerateFlags(result.assets, existingAssets || []),
+      assets: normalizeAssetRegenerateFlags(result.assets, existingAssets),
+      meta: { inputTokens, outputTokens, contextPreview },
     };
   } catch (firstError) {
+    if (hooks?.signal?.aborted) throw firstError;
     console.warn("Brain LLM first attempt failed, retrying with compact prompt:", firstError);
 
-    const retryContent = await callBrainLlm(
+    streamSplitter.reset();
+    codeOutputStarted = false;
+    await hooks?.onStreamReset?.();
+
+    const compactBudget = {
+      ...DEFAULT_BRAIN_CONTEXT_BUDGET,
+      maxTotalChars: 48_000,
+      maxTotalFileChars: 24_000,
+      maxChatMessages: 4,
+      maxChatHistoryChars: 4_000,
+      maxSummaryChars: 1_500,
+    };
+    const compact = await buildBrainUserPrompt(userPrompt, context, compactBudget);
+    const compactFull = `${compact.userPrompt}${languageInstruction}\n\nGenerate a minimal update for this request.`;
+    const retryInputTokens = estimateTokenCount(RETRY_SYSTEM_PROMPT + compactFull);
+
+    const retryContent = await callBrainLlmStream(
       RETRY_SYSTEM_PROMPT,
-      `${userPrompt}${BRAIN_LANGUAGE_INSTRUCTION}${assetsContext}\n\nGenerate a minimal version of this game.`
+      compactFull,
+      streamOpts
     );
+    const outputTokens = estimateTokenCount(retryContent);
     const result = parseBrainResult(retryContent);
     return {
       ...result,
-      assets: normalizeAssetRegenerateFlags(result.assets, existingAssets || []),
+      assets: normalizeAssetRegenerateFlags(result.assets, existingAssets),
+      meta: {
+        inputTokens: retryInputTokens,
+        outputTokens,
+        contextPreview: compact.contextPreview,
+      },
     };
+  }
+}
+
+export async function runBrainLlm(
+  userPrompt: string,
+  context: BrainGenerationContext = {},
+  hooks?: BrainLlmHooks
+): Promise<BrainLlmResult & { meta: BrainLlmRunMeta }> {
+  const prepared = await prepareBrainPrompt(userPrompt, context);
+  await hooks?.onPrepared?.({
+    inputTokens: prepared.inputTokens,
+    contextPreview: prepared.built.contextPreview,
+  });
+  return callBrainFromPrompt({
+    userPrompt,
+    context,
+    prepared,
+    hooks: {
+      onThinkingChunk: hooks?.onThinkingChunk,
+      onCodeChunk: hooks?.onCodeChunk,
+      onCodeOutputStart: hooks?.onCodeOutputStart,
+      onStreamReset: hooks?.onStreamReset,
+      onStreamChunk: hooks?.onStreamChunk,
+      signal: hooks?.signal,
+    },
+  });
+}
+
+const HEAL_SYSTEM_PROMPT = `${BRAIN_SYSTEM_PROMPT}
+
+SELF-HEAL MODE: The previous output failed static analysis / compiler checks.
+Fix ONLY the reported issues. Return the COMPLETE corrected file set in the same JSON format.
+Preserve all working code, file structure, and asset URIs. Do NOT add new features or rename assets.`;
+
+/**
+ * One corrective pass driven by static-analysis/compiler feedback (LSP-style closed loop).
+ * Returns null when Brain LLM is not configured or the pass fails.
+ */
+export async function healBrainCode(params: {
+  prompt: string;
+  files: GeneratedFile[];
+  assets: GeneratedAsset[];
+  issues: string;
+}): Promise<BrainLlmResult | null> {
+  if (!isBrainLlmConfigured()) return null;
+
+  const filesBlock = params.files
+    .map((f) => `--- ${f.path} ---\n${f.content}`)
+    .join("\n\n");
+  const assetsBlock = params.assets
+    .map((a) => `- ${a.uri} (name=${a.name}, format=${a.format || "png"})`)
+    .join("\n");
+
+  const userPrompt =
+    `Original request:\n${params.prompt}\n\n` +
+    `## Static-analysis issues to fix\n${params.issues}\n\n` +
+    `## Current files\n${filesBlock}\n\n` +
+    `## Asset manifest (keep URIs stable)\n${assetsBlock || "(none)"}\n\n` +
+    `Return the corrected JSON (summary, files, assets).${BRAIN_LANGUAGE_INSTRUCTION}`;
+
+  try {
+    const content = await callBrainLlm(HEAL_SYSTEM_PROMPT, userPrompt);
+    return parseBrainResult(content);
+  } catch (error) {
+    console.warn("Self-heal pass failed:", error);
+    return null;
   }
 }
 

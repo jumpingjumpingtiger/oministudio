@@ -22,13 +22,17 @@ export async function POST(
       });
     }
 
-    return createSseStream(async (send) => {
-      await generateAssetsPhase({
-        projectId,
-        versionId,
-        onProgress: send,
-      });
-    });
+    return createSseStream(
+      async (send) => {
+        await generateAssetsPhase({
+          projectId,
+          versionId,
+          onProgress: send,
+          signal: request.signal,
+        });
+      },
+      { signal: request.signal }
+    );
   } catch (error) {
     console.error("Generate assets error:", error);
     return Response.json(
